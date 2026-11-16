@@ -870,7 +870,7 @@ def _classify_roof(roof_pts: np.ndarray, center, radius: float, z_top: float, ri
     return "flat"
 
 
-def _roof_analysis(roof_pts, center, radius: float, z_top: float) -> dict:
+def _roof_analysis(roof_pts, center, radius: float, z_top: float, small_tank_radius: float = 4.0) -> dict:
     """Roof shape from the lower envelope of the upward-facing roof surface.
 
     Handrails, walkways, vents and the central platform sit *on* the roof and
@@ -891,9 +891,29 @@ def _roof_analysis(roof_pts, center, radius: float, z_top: float) -> dict:
     rim = up & (rho > 0.85)
     if rim.sum() < 20:
         return out
-    eave = float(np.percentile(z[rim], 30))
+    # Roof edge: lowest ring of the roof plate next to the wall. Large tanks
+    # have a level walkway ring inside the handrail; the plate meets the wall
+    # there. A single wide band would be pulled up by the dome curvature.
+    ring_edges = np.arange(0.85, 0.981, 0.03)
+    rings = []
+    for lo, hi in zip(ring_edges[:-1], ring_edges[1:]):
+        sel = up & (rho >= lo) & (rho < hi)
+        rings.append((float(np.percentile(z[sel], 30)), int(sel.sum())) if sel.sum() >= 8 else (None, int(sel.sum())))
+    eave = None
+    most = max(c for _z, c in rings)
+    # Lowest ring that is well populated and level with a neighbouring ring;
+    # a lone low ring is a gap or a piece of the inner wall, not the plate.
+    for idx in sorted((i for i, (rz, _c) in enumerate(rings) if rz is not None), key=lambda i: rings[i][0]):
+        rz, count = rings[idx]
+        neighbours = [rings[j][0] for j in (idx - 1, idx + 1) if 0 <= j < len(rings) and rings[j][0] is not None]
+        if count >= 0.3 * most and any(abs(rz - nz_) < 0.2 for nz_ in neighbours):
+            eave = rz
+            break
+    if eave is None:
+        eave = float(np.percentile(z[rim], 30))
+    out["eave_rings"] = [(None if rz is None else round(rz, 3), c) for rz, c in rings]
     wall_top = eave if z_top - eave > 0.3 else z_top
-    edges = np.arange(0.10, 0.951, 0.05)
+    edges = np.arange(0.10, 0.901, 0.05)
     us, zs = [], []
     for lo, hi in zip(edges[:-1], edges[1:]):
         sel = up & (rho >= lo) & (rho < hi) & (z > wall_top - 0.5)
@@ -947,13 +967,17 @@ def _roof_analysis(roof_pts, center, radius: float, z_top: float) -> dict:
     fits = {"flat": trimmed(flat), "cone": trimmed(cone), "dome": trimmed(cap)}
     rise_c = fits["cone"][2]["crown"] - wall_top
     rise_d = fits["dome"][2]["crown"] - wall_top
-    if max(rise_c, rise_d) < max(0.15, 0.03 * radius):
+    rise = max(rise_c, rise_d)
+    if rise < max(0.15, 0.03 * radius):
+        roof = "flat"
+    elif radius < small_tank_radius and rise < max(0.2, 0.12 * radius):
+        # Small tanks: a near-flat plate (flatter than about 1:8) carrying a
+        # platform, vents or a manhole is a flat roof. Steeper low cones and
+        # low domes on small tanks are real (seen in the mesh sections) and
+        # are kept as such.
         roof = "flat"
     else:
         roof = "dome" if fits["dome"][0] <= fits["cone"][0] else "cone"
-    if z_top - eave > 0.3:
-        # Handrail above the eave: the wall ends where the roof plate meets it.
-        wall_top = float(min(z_top, max(eave - 0.5, fits[roof][2]["at_rim"])))
     out.update(
         ok=True,
         roof=roof,

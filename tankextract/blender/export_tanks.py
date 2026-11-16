@@ -131,7 +131,11 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
     pieces.append((f"{tank['id']}_Wall", *_cylinder(cx, cy, z0, z1, radius, segments)))
     handrail = tank.get("handrail_height")
     if handrail:
-        pieces.append((f"{tank['id']}_Handrail", *_band(cx, cy, z1, float(handrail), radius - 0.05, radius, segments)))
+        # Lifted 2 cm off the wall top so its bottom does not z-fight with
+        # the roof edge and rim annulus.
+        pieces.append(
+            (f"{tank['id']}_Handrail", *_band(cx, cy, z1 + 0.02, float(handrail) - 0.02, radius - 0.06, radius, segments))
+        )
     roof = tank.get("roof_type", "flat")
     rise = float(tank.get("roof_rise") or 0.0)
     if roof == "cone" and rise > 0:
@@ -192,12 +196,18 @@ def _place(verts, origin, mode: str):
     return [(x + ox, y + oy, z + oz) for x, y, z in verts]
 
 
+_FLAT_PIECES = ("_Handrail", "_Girder_", "_BaseRing", "_Rim", "_Stair")
+
+
 def _object(name, verts, faces, material):
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(verts, [], faces)
     mesh.update()
+    # Thin rings have 90-degree edges; smooth shading averages the normals
+    # across them and renders as dark speckles.
+    smooth = not any(tag in name for tag in _FLAT_PIECES)
     for poly in mesh.polygons:
-        poly.use_smooth = True
+        poly.use_smooth = smooth
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
     obj.data.materials.append(material)
@@ -277,7 +287,7 @@ def _cylinder(cx, cy, z0, z1, radius, segs, caps=False):
     faces = []
     for k in range(segs):
         nxt = (k + 1) % segs
-        faces.append((k, segs + k, segs + nxt, nxt))
+        faces.append((k, nxt, segs + nxt, segs + k))  # outward normals
     if caps:
         faces.append(tuple(range(segs - 1, -1, -1)))
         faces.append(tuple(range(segs, 2 * segs)))
@@ -315,17 +325,16 @@ def _band(cx, cy, z0, height, r_in, r_out, segs):
                 a = 2 * math.pi * k / segs
                 verts.append((cx + radius * math.cos(a), cy + radius * math.sin(a), z))
     # Layout per ring of z: inner[0:segs], outer[segs:2segs], then the upper copy.
+    # All faces wound counter-clockwise seen from outside, so normals point
+    # out of the band (bottom down, top up, outer wall out, inner wall in).
     faces = []
-    for base in (0, 2 * segs):
-        for k in range(segs):
-            nxt = (k + 1) % segs
-            faces.append((base + k, base + segs + k, base + segs + nxt, base + nxt))
+    top = 2 * segs
     for k in range(segs):
         nxt = (k + 1) % segs
-        # Outer wall.
-        faces.append((segs + k, 2 * segs + segs + k, 2 * segs + segs + nxt, segs + nxt))
-        # Inner wall.
-        faces.append((k, nxt, 2 * segs + nxt, 2 * segs + k))
+        faces.append((k, nxt, segs + nxt, segs + k))  # bottom
+        faces.append((top + k, top + segs + k, top + segs + nxt, top + nxt))  # top
+        faces.append((segs + k, segs + nxt, top + segs + nxt, top + segs + k))  # outer wall
+        faces.append((k, top + k, top + nxt, nxt))  # inner wall
     return verts, faces
 
 
@@ -399,6 +408,7 @@ def _dome(cx, cy, z_rim, radius, rise, segs, rings=12):
     last = segs + (full_rings - 1) * segs
     for k in range(segs):
         faces.append((last + k, apex, last + (k + 1) % segs))
+    faces = [tuple(reversed(face)) for face in faces]  # normals up / outward
     return verts, faces
 
 
