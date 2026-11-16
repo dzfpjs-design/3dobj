@@ -18,13 +18,34 @@ from tankextract.model import Tank
 
 @dataclass
 class DetectConfig:
-    min_radius: float = 1.5
+    min_radius: float = 2.0
     max_radius: float = 80.0
     min_height: float = 2.0
     max_height: float = 80.0
     max_rms: float = 0.20
     min_coverage: float = 260.0
     cell_size: float = 0.25
+    # Wall cells are grouped into connected components and each component is
+    # fitted with one circle. In real photogrammetry the low, noisy vertical
+    # faces of trees, fences, pipes and ground clutter link almost the whole
+    # scene into one giant component, so tanks standing close to anything are
+    # lost. Components are therefore also built from cells whose vertical
+    # extent is at least each of these values (metres); 0 keeps every cell.
+    wall_extent_levels: tuple[float, ...] = (0.0, 1.0, 2.0, 3.0, 5.0, 8.0)
+    # Reject cylinders whose base sits this far above the surrounding ground
+    # (fan stacks and vessels on building roofs).
+    max_base_above_ground: float = 3.0
+    # Reject cylinders taller than this many diameters (chimneys, columns).
+    max_aspect: float = 4.0
+    # Search for several circles inside a wall component that does not fit
+    # one circle (tanks linked by walkways or pipe racks).
+    split_components: bool = True
+    # A tank is a closed shell: almost no mesh inside it between floor and
+    # roof. Circles traced through process-plant clutter fail this.
+    max_interior_ratio: float = 0.2
+    # Mean fraction of the wall height present per 10-degree sector.
+    min_wall_fill: float = 0.6
+    split_max_cells: int = 80000
 
 
 @dataclass
@@ -38,6 +59,7 @@ class _Candidate:
     inlier_ratio: float
     coverage: float
     samples: dict[str, np.ndarray] = field(default_factory=dict)
+    level: float = 0.0
 
 
 class SceneAccumulator:
@@ -50,6 +72,7 @@ class SceneAccumulator:
         # (ix, iy) -> [zmin, count] for upward faces, 2 m cells
         self.ground: dict[tuple[int, int], list[float]] = {}
         self.tile_boxes: list[tuple[str, np.ndarray]] = []
+        self._ground_arrays = None
 
     def add_mesh(
         self,
@@ -77,7 +100,8 @@ class SceneAccumulator:
         if np.any(vertical):
             pts = np.concatenate([a[vertical], b[vertical], c[vertical]], axis=0)
             _accumulate_wall(pts, self.wall, self.config.cell_size)
-        upward = valid & (nz > 0.72)
+        # Near-horizontal faces of either winding: some exporters flip it.
+        upward = valid & (np.abs(nz) > 0.72)
         if np.any(upward):
             centroid = (a[upward] + b[upward] + c[upward]) / 3.0
             _accumulate_ground(centroid, self.ground)
@@ -87,13 +111,49 @@ class SceneAccumulator:
     def candidates(self) -> list[_Candidate]:
         if not self.wall:
             return []
-        components = _components(self.wall, gap=2)
-        found: list[_Candidate] = []
-        for keys in components:
-            candidate = _fit_component(keys, self.wall, self.config)
-            if candidate is not None:
-                found.append(candidate)
-        return _merge_candidates(found, self.wall, self.config)
+        levels = sorted(set(float(v) for v in (self.config.wall_extent_levels or (0.0,))))
+        found_all: list[_Candidate] = []
+        for level in levels:
+            if level <= 0:
+                bins = self.wall
+            else:
+                bins = {key: rec for key, rec in self.wall.items() if rec[1] - rec[0] >= level}
+            if not bins:
+                continue
+            found: list[_Candidate] = []
+            for keys in _components(bins, gap=2):
+                candidate = _fit_component(keys, bins, self.config)
+                if candidate is not None:
+                    found.append(candidate)
+                elif level > 0 and self.config.split_components:
+                    # Several tanks joined by walkways, pipes or a shared
+                    # stair: pull the circles out one at a time.
+                    found.extend(_split_component(keys, bins, self.config))
+            for candidate in found:
+                candidate.level = level
+            found_all.extend(_merge_candidates(found, bins, self.config))
+        return _drop_swallowed(_dedupe_candidates(found_all))
+
+    def ground_near(self, x: float, y: float, radius: float = 0.0) -> float:
+        """Local terrain height around a footprint.
+
+        Uses the low end of the upward-face cells in an annulus outside the
+        footprint, so the tank's own roof (or the roof of a building under a
+        rooftop object) is not taken as ground.
+        """
+        if not self.ground:
+            return 0.0
+        if self._ground_arrays is None:
+            keys = np.array(list(self.ground.keys()), dtype=np.float64)
+            zs = np.array([rec[0] for rec in self.ground.values()], dtype=np.float64)
+            self._ground_arrays = ((keys + 0.5) * 2.0, zs)
+        centers, zs = self._ground_arrays
+        dist = np.hypot(centers[:, 0] - x, centers[:, 1] - y)
+        for outer in (25.0, 50.0, 100.0):
+            ring = (dist > radius + 1.5) & (dist < radius + outer)
+            if ring.sum() >= 20:
+                return float(np.percentile(zs[ring], 10))
+        return self.ground_z_at(x, y)
 
     def ground_z_at(self, x: float, y: float) -> float:
         if not self.ground:
@@ -120,14 +180,38 @@ def refine_candidates(
     block: str,
     srs: str,
     origin: tuple[float, float, float],
+    debug: list | None = None,
 ) -> list[Tank]:
-    """Pass 2. ``tiles`` are absolute-coordinate meshes overlapping the candidates."""
+    """Pass 2. ``tiles`` are absolute-coordinate meshes overlapping the candidates.
+
+    ``ground_at(x, y, radius)`` returns the local terrain height. When ``debug``
+    is a list, one record per candidate (kept or rejected, with the reason) is
+    appended to it.
+    """
     tanks: list[Tank] = []
     for candidate in candidates:
         samples = _collect_samples(candidate, tiles)
-        tank = _measure(candidate, samples, config, ground_at, block, srs, origin)
+        info: dict = {}
+        tank = _measure(candidate, samples, config, ground_at, block, srs, origin, info)
         if tank is not None:
             tanks.append(tank)
+        if debug is not None:
+            record = {
+                "cx": candidate.cx,
+                "cy": candidate.cy,
+                "radius": candidate.radius,
+                "rms": candidate.rms,
+                "coverage": candidate.coverage,
+                "z_min": candidate.z_min,
+                "z_max": candidate.z_max,
+                "level": candidate.level,
+                "kept": tank is not None,
+                "reason": "ok" if tank is not None else info.get("reason", "rejected"),
+            }
+            record.update({k: v for k, v in info.items() if k != "reason"})
+            if tank is not None:
+                record["tank"] = tank
+            debug.append(record)
     tanks.sort(key=lambda item: (round(item.center_x, 2), round(item.center_y, 2)))
     for index, tank in enumerate(tanks, start=1):
         tank.name = f"Tank_{index:03d}"
@@ -256,6 +340,102 @@ def _fit_component(keys: list, bins: dict, config: DetectConfig) -> _Candidate |
     )
 
 
+def _circle_from_three(p1, p2, p3):
+    ax, ay = p1
+    bx, by = p2
+    cx, cy = p3
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-9:
+        return None
+    a2 = ax * ax + ay * ay
+    b2 = bx * bx + by * by
+    c2 = cx * cx + cy * cy
+    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    return ux, uy, float(np.hypot(ax - ux, ay - uy))
+
+
+def _split_component(keys: list, bins: dict, config: DetectConfig, max_circles: int = 40) -> list[_Candidate]:
+    """RANSAC: extract several circles from one wall component.
+
+    Coordinates are taken relative to the component centroid so the
+    three-point circle stays well conditioned at EPSG magnitudes.
+    """
+    n = len(keys)
+    if n < 60 or n > config.split_max_cells:
+        return []
+    from scipy.spatial import cKDTree
+
+    xy = np.empty((n, 2), dtype=np.float64)
+    ext = np.empty(n, dtype=np.float64)
+    for i, key in enumerate(keys):
+        rec = bins[key]
+        count = max(rec[2], 1.0)
+        xy[i, 0] = rec[3] / count
+        xy[i, 1] = rec[4] / count
+        ext[i] = rec[1] - rec[0]
+    shift = xy.mean(axis=0)
+    local = xy - shift
+    cell = config.cell_size
+    alive = np.ones(n, dtype=bool)
+    rng = np.random.default_rng(12345)
+    search = min(2.0 * config.max_radius, 45.0)
+    found: list[_Candidate] = []
+    misses = 0
+    while len(found) < max_circles and alive.sum() >= 24 and misses < 3:
+        idx = np.flatnonzero(alive)
+        tree = cKDTree(local[idx])
+        trials = int(min(4000, max(300, len(idx) // 4)))
+        best = None
+        best_score = 0.0
+        for _ in range(trials):
+            i = idx[rng.integers(len(idx))]
+            near = tree.query_ball_point(local[i], search)
+            if len(near) < 24:
+                continue
+            j, k = rng.choice(len(near), 2, replace=False)
+            circle = _circle_from_three(local[i], local[idx[near[j]]], local[idx[near[k]]])
+            if circle is None:
+                continue
+            ux, uy, r = circle
+            if not (config.min_radius <= r <= config.max_radius):
+                continue
+            tol = max(0.15, 0.025 * r)
+            cand = tree.query_ball_point((ux, uy), r + tol)
+            if len(cand) < 24:
+                continue
+            cand = idx[np.asarray(cand)]
+            dist = np.hypot(local[cand, 0] - ux, local[cand, 1] - uy)
+            on = cand[np.abs(dist - r) <= tol]
+            expected = 2.0 * np.pi * r / cell
+            if len(on) < 0.35 * expected:
+                continue
+            ang = np.arctan2(local[on, 1] - uy, local[on, 0] - ux)
+            hist, _ = np.histogram(ang, bins=36, range=(-np.pi, np.pi))
+            filled = float((hist > 0).mean())
+            if filled * 360.0 < config.min_coverage * 0.75:
+                continue
+            score = filled * min(1.0, len(on) / expected)
+            if score > best_score:
+                best_score = score
+                best = (ux, uy, r)
+        if best is None:
+            break
+        ux, uy, r = best
+        dist = np.hypot(local[:, 0] - ux, local[:, 1] - uy)
+        band = alive & (np.abs(dist - r) <= max(0.45, 0.05 * r))
+        sub = [keys[i] for i in np.flatnonzero(band)]
+        candidate = _fit_component(sub, bins, config) if len(sub) >= 24 else None
+        # Remove the ring (and whatever is inside it) either way, so the
+        # next round looks for a different circle.
+        alive &= ~(dist <= r + max(0.6, 0.06 * r))
+        if candidate is None:
+            misses += 1
+            continue
+        found.append(candidate)
+    return found
+
+
 def _robust_circle(xy: np.ndarray, weight: np.ndarray, config: DetectConfig):
     keep = np.ones(len(xy), dtype=bool)
     center = None
@@ -382,11 +562,24 @@ def _merge_candidates(found: list[_Candidate], bins: dict, config: DetectConfig)
                 coverage=coverage,
             )
         )
-    # Drop a candidate that sits inside a larger accepted tank (stair-only cluster).
+    return _drop_swallowed(merged)
+
+
+def _dedupe_candidates(found: list[_Candidate]) -> list[_Candidate]:
+    """The same tank is usually found at several wall-extent levels; keep the best fit."""
+    kept: list[_Candidate] = []
+    for item in sorted(found, key=lambda c: (-round(c.coverage, -1), c.rms)):
+        if not any(_same_tank(item, other) for other in kept):
+            kept.append(item)
+    return kept
+
+
+def _drop_swallowed(found: list[_Candidate]) -> list[_Candidate]:
+    """Drop a candidate that sits inside a larger one (stair-only or roof-fitting cluster)."""
     kept = []
-    for item in merged:
+    for item in found:
         swallowed = False
-        for other in merged:
+        for other in found:
             if other is item:
                 continue
             dist = np.hypot(item.cx - other.cx, item.cy - other.cy)
@@ -467,7 +660,39 @@ def _cap(chunks: list[np.ndarray], limit: int) -> np.ndarray:
     return pts
 
 
-def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, origin) -> Tank | None:
+def _shell_checks(samples, shell_pts, center, radius, z_base, z_top) -> tuple[float, float]:
+    inside = samples["all"]
+    interior = 0.0
+    if len(inside):
+        rho = np.hypot(inside[:, 0] - center[0], inside[:, 1] - center[1])
+        within = rho < radius * 1.05
+        core = within & (rho < radius * 0.85) & (inside[:, 2] > z_base + 1.0) & (inside[:, 2] < z_top - 1.0)
+        interior = float(core.sum()) / max(1.0, float(within.sum()))
+    fill = 0.0
+    wall_h = max(z_top - z_base, 1e-6)
+    if len(shell_pts):
+        ang = np.arctan2(shell_pts[:, 1] - center[1], shell_pts[:, 0] - center[0])
+        sector = np.clip(((ang + np.pi) / (2 * np.pi) * 36).astype(int), 0, 35)
+        spans = np.zeros(36)
+        for k in range(36):
+            zs = shell_pts[sector == k, 2]
+            if len(zs):
+                spans[k] = min(1.0, (zs.max() - zs.min()) / wall_h)
+        fill = float(spans.mean())
+    return interior, fill
+
+
+def _call_ground(ground_at, x: float, y: float, radius: float) -> float:
+    try:
+        return float(ground_at(x, y, radius))
+    except TypeError:
+        return float(ground_at(x, y))
+
+
+def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, origin, info=None) -> Tank | None:
+    if info is None:
+        info = {}
+    info["reason"] = "too few wall points"
     wall = samples["wall"]
     if len(wall) < 30:
         return None
@@ -492,10 +717,17 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
     if center is None or keep.sum() < 30:
         return None
     rms = float(np.sqrt(np.mean(error[keep] ** 2)))
-    if rms > config.max_rms or not (config.min_radius <= radius <= config.max_radius):
+    info.update(fit_radius=float(radius), fit_rms=rms)
+    if rms > config.max_rms:
+        info["reason"] = "rms"
+        return None
+    if not (config.min_radius <= radius <= config.max_radius):
+        info["reason"] = "radius"
         return None
     coverage = _coverage(wall[keep, :2], center)
+    info["fit_coverage"] = coverage
     if coverage < config.min_coverage:
+        info["reason"] = "coverage"
         return None
     # Wall height is the vertical run of the cylinder itself. A dome or cone
     # that leaves the radius is not part of the wall, so use a tight radial band.
@@ -505,7 +737,24 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
     z_base = float(np.percentile(wall[shell, 2], 1))
     z_top = float(np.percentile(wall[shell, 2], 99))
     wall_h = z_top - z_base
+    ground = _call_ground(ground_at, float(center[0]), float(center[1]), float(radius))
+    info.update(z_base=z_base, wall_height=wall_h, ground=ground)
     if wall_h < config.min_height or wall_h > config.max_height:
+        info["reason"] = "height"
+        return None
+    if config.max_base_above_ground is not None and z_base - ground > config.max_base_above_ground:
+        info["reason"] = "elevated base (on a roof or structure)"
+        return None
+    if config.max_aspect and wall_h > config.max_aspect * 2.0 * radius:
+        info["reason"] = "slender (chimney or column)"
+        return None
+    interior, fill = _shell_checks(samples, wall[shell], center, radius, z_base, z_top)
+    info.update(interior_ratio=interior, wall_fill=fill)
+    if interior > config.max_interior_ratio:
+        info["reason"] = "geometry inside the cylinder (not a closed tank)"
+        return None
+    if fill < config.min_wall_fill:
+        info["reason"] = "wall not continuous over its height"
         return None
     roof_cloud = _roof_cloud(samples, center, radius, z_top)
     if len(roof_cloud):
@@ -515,6 +764,8 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
     total = max(wall_h, z_max - z_base)
     rise = max(0.0, total - wall_h)
     roof = _classify_roof(roof_cloud, center, radius, z_top, rise)
+    roof = _cone_or_dome(roof, roof_cloud, center, radius, z_top)
+    info["roof_profile"] = _roof_profile(roof_cloud, center, radius, z_top)
     if roof == "flat":
         total = wall_h
         rise = 0.0
@@ -531,7 +782,7 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
         center_x=float(center[0]),
         center_y=float(center[1]),
         z_base=z_base,
-        z_ground=float(ground_at(float(center[0]), float(center[1]))),
+        z_ground=ground,
         radius=float(radius),
         wall_height=float(wall_h),
         total_height=float(total),
@@ -585,6 +836,49 @@ def _classify_roof(roof_pts: np.ndarray, center, radius: float, z_top: float, ri
     if quad[0] < 0 and rms_q <= rms_l:
         return "dome"
     return "flat"
+
+
+def _cone_or_dome(roof: str, roof_pts, center, radius: float, z_top: float) -> str:
+    """Re-check cone vs dome on a median radial profile.
+
+    The least-squares test in ``_classify_roof`` is easily swayed by vents,
+    walkways and handrails on real roofs. Medians per radial bin are not.
+    At half the radius a cone has dropped to about half its rise; a
+    spherical cap is still at roughly three quarters of it.
+    """
+    if roof not in ("cone", "dome") or len(roof_pts) < 50:
+        return roof
+    rho = np.hypot(roof_pts[:, 0] - center[0], roof_pts[:, 1] - center[1]) / radius
+    z = roof_pts[:, 2] - z_top
+    keep = (rho < 0.98) & (z > -0.5)
+
+    def band(lo, hi):
+        sel = keep & (rho >= lo) & (rho < hi)
+        return float(np.median(z[sel])) if sel.sum() >= 8 else None
+
+    crown = band(0.0, 0.2)
+    mid = band(0.4, 0.6)
+    eave = band(0.85, 0.98)
+    if crown is None or mid is None:
+        return roof
+    base = min(0.0, eave) if eave is not None else 0.0
+    rise = crown - base
+    if rise < max(0.3, 0.04 * radius):
+        return roof
+    ratio = (mid - base) / rise
+    return "dome" if ratio >= 0.62 else "cone"
+
+
+def _roof_profile(roof_pts, center, radius: float, z_top: float, bins: int = 10) -> list:
+    """Median roof height above the wall top in radial bins (debug output)."""
+    if len(roof_pts) == 0:
+        return []
+    rho = np.hypot(roof_pts[:, 0] - center[0], roof_pts[:, 1] - center[1]) / radius
+    out = []
+    for i in range(bins):
+        sel = (rho >= i / bins) & (rho < (i + 1) / bins) & (roof_pts[:, 2] >= z_top - 0.2)
+        out.append(round(float(np.median(roof_pts[sel, 2]) - z_top), 3) if sel.sum() >= 5 else None)
+    return out
 
 
 def _roof_height(roof_pts, center, radius, z_base, z_top, roof: str) -> tuple[float, float]:

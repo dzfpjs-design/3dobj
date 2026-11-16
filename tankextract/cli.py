@@ -48,12 +48,24 @@ def main(argv: list[str] | None = None) -> int:
         default="finest",
         help="使用的细节层级：finest（每个瓦片目录里最大的 _L层号_）或具体层号，例如 21",
     )
-    parser.add_argument("--min-radius", type=float, default=1.5, help="最小罐半径（米），默认 1.5")
+    parser.add_argument("--min-radius", type=float, default=2.0, help="最小罐半径（米），默认 2.0。更小的多为立管、阀井、小型立式容器")
     parser.add_argument("--max-radius", type=float, default=80.0, help="最大罐半径（米），默认 80")
     parser.add_argument("--min-height", type=float, default=2.0, help="最小壁高（米），默认 2")
     parser.add_argument("--max-height", type=float, default=80.0, help="最大壁高（米），默认 80")
     parser.add_argument("--max-rms", type=float, default=0.20, help="圆拟合允许的最大 RMS 残差（米），默认 0.20")
     parser.add_argument("--min-coverage", type=float, default=260.0, help="圆周覆盖的最小角度，默认 260")
+    parser.add_argument(
+        "--max-base-above-ground",
+        type=float,
+        default=3.0,
+        help="罐底高出周围地面的最大值（米），超过视为楼顶/构筑物上的设备，默认 3",
+    )
+    parser.add_argument(
+        "--max-aspect",
+        type=float,
+        default=4.0,
+        help="壁高/直径的最大比值，超过视为烟囱或塔器，默认 4",
+    )
     parser.add_argument("--cell-size", type=float, default=0.25, help="水平分箱尺寸（米），默认 0.25")
     parser.add_argument("--segments", type=int, default=96, help="重建圆周分段数，默认 96")
     parser.add_argument(
@@ -98,6 +110,8 @@ def _options_from_args(args) -> RunOptions:
         max_rms=args.max_rms,
         min_coverage=args.min_coverage,
         cell_size=args.cell_size,
+        max_base_above_ground=args.max_base_above_ground,
+        max_aspect=args.max_aspect,
         local_offset=args.local_offset,
         merge=bool(args.merge or not args.no_merge),
         segments=args.segments,

@@ -26,13 +26,15 @@ class RunOptions:
     osgconv: str | None = None
     blender: str | None = None
     lod: str = "finest"
-    min_radius: float = 1.5
+    min_radius: float = 2.0
     max_radius: float = 80.0
     min_height: float = 2.0
     max_height: float = 80.0
     max_rms: float = 0.20
     min_coverage: float = 260.0
     cell_size: float = 0.25
+    max_base_above_ground: float = 3.0
+    max_aspect: float = 4.0
     local_offset: bool = False
     merge: bool = True
     segments: int = 96
@@ -56,15 +58,18 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
         max_rms=options.max_rms,
         min_coverage=options.min_coverage,
         cell_size=options.cell_size,
+        max_base_above_ground=options.max_base_above_ground,
+        max_aspect=options.max_aspect,
     )
     tanks: list[Tank] = []
+    debug: list[dict] = []
     stats = {"python": 0, "osgconv": 0, "tiles": 0}
     for block in blocks:
         log(
             f"块 {block.label}: SRS={block.srs} 原点={block.origin[0]:.3f},"
             f"{block.origin[1]:.3f},{block.origin[2]:.3f} 瓦片文件 {len(block.osgb_names)}"
         )
-        found = _detect_block(block, options, config, osgconv, stats, log)
+        found = _detect_block(block, options, config, osgconv, stats, log, debug)
         tanks.extend(found)
     tanks.sort(key=lambda item: (item.block, round(item.center_x, 2), round(item.center_y, 2)))
     for index, tank in enumerate(tanks, start=1):
@@ -72,6 +77,7 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     output.mkdir(parents=True, exist_ok=True)
     mode = "local" if options.local_offset else "absolute"
     write_sidecars(tanks, output, mode)
+    _write_candidate_report(debug, tanks, output)
     spec_path = output / "tanks_spec.json"
     spec_path.write_text(
         json.dumps(_spec(tanks, options), ensure_ascii=False, indent=2),
@@ -95,7 +101,7 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     return tanks
 
 
-def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgconv, stats, log) -> list[Tank]:
+def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgconv, stats, log, debug=None) -> list[Tank]:
     selected = _select_tiles(block.osgb_names, options.lod)
     if options.limit_tiles:
         selected = selected[: options.limit_tiles]
@@ -150,11 +156,47 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
         rough,
         tiles,
         config,
-        accumulator.ground_z_at,
+        accumulator.ground_near,
         block.label,
         block.srs,
         block.origin,
+        debug=debug,
     )
+
+
+def _write_candidate_report(debug: list[dict], tanks: list[Tank], output: Path) -> None:
+    """candidates.csv: every pass-1 cylinder candidate and why it was kept or rejected."""
+    import csv
+
+    names = {id(tank): tank.name for tank in tanks}
+    fields = [
+        "tank_id", "kept", "reason", "X", "Y", "radius_m", "rms_m", "coverage_deg",
+        "wall_extent_level_m", "z_base", "wall_height_m", "ground_z", "interior_ratio", "wall_fill",
+        "roof_profile",
+    ]
+    output.mkdir(parents=True, exist_ok=True)
+    with open(output / "candidates.csv", "w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(fields)
+        for rec in debug:
+            tank = rec.get("tank")
+            writer.writerow([
+                names.get(id(tank), "") if tank is not None else "",
+                rec["kept"],
+                rec["reason"],
+                f"{rec['cx']:.3f}",
+                f"{rec['cy']:.3f}",
+                f"{rec.get('fit_radius', rec['radius']):.3f}",
+                f"{rec.get('fit_rms', rec['rms']):.4f}",
+                f"{rec.get('fit_coverage', rec['coverage']):.0f}",
+                rec["level"],
+                f"{rec['z_base']:.2f}" if "z_base" in rec else "",
+                f"{rec['wall_height']:.2f}" if "wall_height" in rec else "",
+                f"{rec['ground']:.2f}" if "ground" in rec else "",
+                f"{rec['interior_ratio']:.3f}" if "interior_ratio" in rec else "",
+                f"{rec['wall_fill']:.2f}" if "wall_fill" in rec else "",
+                json.dumps(rec.get("roof_profile", [])),
+            ])
 
 
 def _box_for(accumulator: SceneAccumulator, name: str):
