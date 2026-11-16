@@ -272,7 +272,9 @@ def stair_tower_parts(t: dict, prefix: str) -> list:
                              (float(np.linalg.norm(b - a)) / n_steps + 0.03, fw, 0.05), deg))
         for sgn in (-1, 1):
             e = v * sgn * fw / 2
-            parts.append(beam(f"{prefix}_flight_{i + 1:02d}", (*(a + e), z0), (*(b + e), z1), 0.06, 0.2))
+            # stringer hangs 0.2 m below its top line: lift it so its underside follows the flight
+            # and the first flight's foot stands on the ground instead of sinking into it
+            parts.append(beam(f"{prefix}_flight_{i + 1:02d}", (*(a + e), z0 + 0.2), (*(b + e), z1 + 0.2), 0.06, 0.2))
         e_in = -v * side * fw / 2
         parts += railing(f"{prefix}_rail_flight_{i + 1:02d}", a + e_in, b + e_in, z0, rh * 0.9, post_step=1.2, z_base_b=z1)
     # Landings at each level: platforms at both ends (half-landings), full width.
@@ -1278,6 +1280,11 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool =
                 dd = np.hypot(F[:, 0] - fx, F[:, 1] - fy)
                 dt = np.hypot(F[:, 0] - tank.center_x, F[:, 1] - tank.center_y)
                 mm = (dd < 1.8) & (dt > r_out_t) & (F[:, 5] > 0.85) & (F[:, 2] > st["z_bottom"] - 2.0) & (F[:, 2] < st["z_bottom"] + 1.2)
+                for other in tanks:  # not on a neighbouring tank or its foundation
+                    if other is not tank:
+                        ofd = getattr(other, "foundation", None)
+                        ro = other.radius + (ofd["protrusion"] if ofd else 0.0) + 0.15
+                        mm &= np.hypot(F[:, 0] - other.center_x, F[:, 1] - other.center_y) > ro
                 g = G.floor_z(F[mm, 2], F[mm, 6])
                 if g is None:
                     g = tank.z_ground

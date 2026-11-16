@@ -89,6 +89,22 @@ def _tank(radius, wall, cx=0.0, cy=0.0, roof="flat", rise=0.0, sphere=None):
 
 # -------------------------------------------------------------- the tests ---
 
+def _parts_zmin(parts):
+    """Lowest point of a list of primitive parts, as the exporter builds them."""
+    z = []
+    for p in parts:
+        k = p["type"]
+        if k == "beam":  # top on the p0-p1 line, hangs `depth` below it
+            z.append(min(p["p0"][2], p["p1"][2]) - p["depth"])
+        elif k == "box":
+            z.append(p["center"][2] - p["size"][2] / 2)
+        elif k == "rod":
+            z.append(min(p["p0"][2], p["p1"][2]))
+        elif k in ("prism", "cylinder"):
+            z.append(p["z0"])
+    return min(z)
+
+
 def test_stair_tower_frame_and_landings():
     L, W, deg = 3.0, 2.6, 30.0
     corners = S.rect_corners(0.0, 0.0, L, W, deg)
@@ -107,9 +123,12 @@ def test_stair_tower_frame_and_landings():
     assert abs(((t["axis_deg"] - deg + 90) % 180) - 90) < 2.0
     assert abs(t["rise"] - 1.5) < 0.1 and abs(t["z_top"] - 15.0) < 0.15
     assert t["levels_measured"] >= 8
-    names = {p["name"] for p in S.stair_tower_parts(t, "Stair_T")}
+    tparts = S.stair_tower_parts(t, "Stair_T")
+    names = {p["name"] for p in tparts}
     for want in ("Stair_T_column_01", "Stair_T_flight_01", "Stair_T_landing_01", "Stair_T_rail_top_top", "Stair_T_top_deck"):
         assert want in names
+    # nothing sinks below the tower's ground (the first flight's stringers used to hang 0.2 m into it)
+    assert abs(_parts_zmin(tparts) - t["z_ground"]) < 0.01
 
 
 def test_pipe_rack_pipes_tiers_and_bents():
@@ -184,8 +203,10 @@ def test_wall_stair_and_wall_pipe():
     assert len(pipes) == 1, pipes
     assert abs(((pipes[0]["azimuth_deg"] - 200 + 180) % 360) - 180) < 3
     assert abs(pipes[0]["diameter"] - 0.3) < 0.07
-    names = {p["name"] for p in S.wall_stair_parts("Tank_T", tank, st)}
+    sparts = S.wall_stair_parts("Tank_T", tank, st)
+    names = {p["name"] for p in sparts}
     assert {"Tank_T_stair_treads", "Tank_T_stair_stringer_outer", "Tank_T_stair_rail", "Tank_T_stair_landing"} <= names
+    assert abs(_parts_zmin(sparts) - st["z_bottom"]) < 0.01  # the stair foot stands on its bottom level
 
 
 def test_sphere_legs_pedestals_and_measured_bracing():
