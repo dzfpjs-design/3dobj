@@ -115,7 +115,23 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
     z1 = z0 + float(tank["wall_height"])
     radius = float(tank["radius"])
     pieces = []
+    sphere = tank.get("sphere")
+    if sphere:
+        zc = float(sphere["center_z"])
+        rs = float(sphere["radius"])
+        pieces.append((f"{tank['id']}_Sphere", *_uv_sphere(cx, cy, zc, rs, segments, max(12, segments // 2))))
+        leg_r = float(sphere.get("leg_radius") or 0.3)
+        leg_rho = float(sphere.get("leg_rho") or rs * 0.97)
+        bottom = float(sphere.get("leg_bottom", z0))
+        for index, azimuth in enumerate(sphere.get("legs") or [], start=1):
+            a = math.radians(float(azimuth))
+            lx, ly = cx + leg_rho * math.cos(a), cy + leg_rho * math.sin(a)
+            pieces.append((f"{tank['id']}_Leg_{index:02d}", *_cylinder(lx, ly, bottom, zc, leg_r, 12, caps=True)))
+        return _finish(pieces, tank, mode, material)
     pieces.append((f"{tank['id']}_Wall", *_cylinder(cx, cy, z0, z1, radius, segments)))
+    handrail = tank.get("handrail_height")
+    if handrail:
+        pieces.append((f"{tank['id']}_Handrail", *_band(cx, cy, z1, float(handrail), radius - 0.05, radius, segments)))
     roof = tank.get("roof_type", "flat")
     rise = float(tank.get("roof_rise") or 0.0)
     if roof == "cone" and rise > 0:
@@ -155,6 +171,11 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
                 *_stair(cx, cy, z0, float(tank["wall_height"]), max(outer - width, radius + 0.05), outer, turns, segments // 2),
             )
         )
+    return _finish(pieces, tank, mode, material)
+
+
+def _finish(pieces, tank: dict, mode: str, material) -> list:
+    origin = tank["origin"]
     objects = []
     for name, verts, faces in pieces:
         placed = _place(verts, origin, mode)
@@ -224,7 +245,7 @@ def _export(path: Path, objects) -> None:
 
 
 def _sample_vertex(objects) -> list[float]:
-    wall = next(obj for obj in objects if obj.name.endswith("_Wall"))
+    wall = next((obj for obj in objects if obj.name.endswith(("_Wall", "_Sphere"))), objects[0])
     vertex = wall.data.vertices[0].co
     return [float(vertex.x), float(vertex.y), float(vertex.z)]
 
@@ -237,7 +258,7 @@ def _reimport_sample(path: Path, tank_id: str):
     sample = None
     props = {}
     for obj in imported:
-        if "Wall" in obj.name:
+        if "Wall" in obj.name or "Sphere" in obj.name:
             vertex = obj.data.vertices[0].co
             sample = [float(vertex.x), float(vertex.y), float(vertex.z)]
             props = {key: obj[key] for key in obj.keys() if key != "_RNA_UI"}
@@ -247,7 +268,7 @@ def _reimport_sample(path: Path, tank_id: str):
     return sample, names, props
 
 
-def _cylinder(cx, cy, z0, z1, radius, segs):
+def _cylinder(cx, cy, z0, z1, radius, segs, caps=False):
     verts = []
     for z in (z0, z1):
         for k in range(segs):
@@ -257,6 +278,9 @@ def _cylinder(cx, cy, z0, z1, radius, segs):
     for k in range(segs):
         nxt = (k + 1) % segs
         faces.append((k, segs + k, segs + nxt, nxt))
+    if caps:
+        faces.append(tuple(range(segs - 1, -1, -1)))
+        faces.append(tuple(range(segs, 2 * segs)))
     return verts, faces
 
 
@@ -315,12 +339,39 @@ def _cone(cx, cy, z_rim, radius, rise, segs):
     return verts, faces
 
 
+def _uv_sphere(cx, cy, cz, radius, segs, rings):
+    verts = [(cx, cy, cz - radius)]
+    for i in range(1, rings):
+        phi = -math.pi / 2 + math.pi * i / rings
+        rho = radius * math.cos(phi)
+        z = cz + radius * math.sin(phi)
+        for k in range(segs):
+            a = 2 * math.pi * k / segs
+            verts.append((cx + rho * math.cos(a), cy + rho * math.sin(a), z))
+    verts.append((cx, cy, cz + radius))
+    faces = []
+    for k in range(segs):
+        faces.append((0, 1 + (k + 1) % segs, 1 + k))
+    for i in range(rings - 2):
+        base = 1 + i * segs
+        for k in range(segs):
+            nxt = (k + 1) % segs
+            faces.append((base + k, base + nxt, base + segs + nxt, base + segs + k))
+    top = len(verts) - 1
+    last = 1 + (rings - 2) * segs
+    for k in range(segs):
+        faces.append((last + k, last + (k + 1) % segs, top))
+    return verts, faces
+
+
 def _dome(cx, cy, z_rim, radius, rise, segs, rings=12):
+    """Spherical-cap roof (拱顶) with the measured rise."""
     verts = []
+    rs = (radius * radius + rise * rise) / (2.0 * rise)
     for i in range(rings):
-        theta = ((i + 1) / rings) * (math.pi / 2)
-        rho = radius * math.cos(theta)
-        z = z_rim + rise * math.sin(theta)
+        frac = 1.0 - (i + 1) / rings
+        rho = radius * frac
+        z = z_rim + math.sqrt(max(rs * rs - rho * rho, 0.0)) - (rs - rise)
         if i == rings - 1:
             verts.append((cx, cy, z_rim + rise))
         else:

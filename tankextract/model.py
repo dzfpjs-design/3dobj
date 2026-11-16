@@ -26,6 +26,9 @@ class Tank:
     wind_girders: list[dict] = field(default_factory=list)
     base_ring: dict | None = None
     spiral_stair: dict | None = None
+    handrail_height: float | None = None
+    # Spherical tank: {"center_z", "radius", "legs": [azimuth deg], "leg_rho", "leg_radius"}.
+    sphere: dict | None = None
     name: str = ""
 
     @property
@@ -68,4 +71,7 @@ class Tank:
             "stair_outer_radius_m": stair.get("outer_radius", ""),
             "stair_width_m": stair.get("width", ""),
             "stair_turns": stair.get("turns", ""),
+            "handrail_height_m": self.handrail_height if self.handrail_height is not None else "",
+            "sphere_center_z": (self.sphere or {}).get("center_z", ""),
+            "sphere_leg_count": len((self.sphere or {}).get("legs", [])) if self.sphere else "",
         }

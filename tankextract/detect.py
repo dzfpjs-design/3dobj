@@ -629,7 +629,7 @@ def _collect_samples(candidate: _Candidate, tiles: list[tuple[np.ndarray, np.nda
         nz_v = np.concatenate([nz[take], nz[take], nz[take]])
         rho = np.hypot(pts[:, 0] - candidate.cx, pts[:, 1] - candidate.cy)
         vertical = np.abs(nz_v) < 0.40
-        horizontal = nz_v > 0.55
+        horizontal = np.abs(nz_v) > 0.55
         wall = vertical & (np.abs(rho - candidate.radius) < max(0.8, 0.15 * candidate.radius))
         if np.any(wall):
             wall_pts.append(pts[wall])
@@ -748,33 +748,63 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
     if config.max_aspect and wall_h > config.max_aspect * 2.0 * radius:
         info["reason"] = "slender (chimney or column)"
         return None
+    sphere_fit = _sphere_check(samples["all"], center, radius, z_base, z_top)
+    info["sphere_check"] = sphere_fit
     interior, fill = _shell_checks(samples, wall[shell], center, radius, z_base, z_top)
     info.update(interior_ratio=interior, wall_fill=fill)
-    if interior > config.max_interior_ratio:
+    if sphere_fit.get("sphere"):
+        pass  # a sphere's own lower hemisphere lies inside the cylinder test volume
+    elif interior > config.max_interior_ratio:
         info["reason"] = "geometry inside the cylinder (not a closed tank)"
         return None
     if fill < config.min_wall_fill:
         info["reason"] = "wall not continuous over its height"
         return None
     roof_cloud = _roof_cloud(samples, center, radius, z_top)
-    if len(roof_cloud):
-        z_max = float(np.percentile(roof_cloud[:, 2], 99.5))
-    else:
-        z_max = z_top
-    total = max(wall_h, z_max - z_base)
-    rise = max(0.0, total - wall_h)
-    roof = _classify_roof(roof_cloud, center, radius, z_top, rise)
-    roof = _cone_or_dome(roof, roof_cloud, center, radius, z_top)
     info["roof_profile"] = _roof_profile(roof_cloud, center, radius, z_top)
-    if roof == "flat":
-        total = wall_h
+    fit = _roof_analysis(samples["roof"], center, radius, z_top)
+    info["roof_fit"] = {k: v for k, v in fit.items() if k != "profile"}
+    handrail = None
+    sphere = None
+    if sphere_fit.get("sphere"):
+        # The surface keeps curving on a sphere of the wall radius for most
+        # of a radius above the vertical stretch: a spherical tank on legs.
+        center_z = sphere_fit["center_z"]
+        radius = sphere_fit["radius"]
+        legs = _sphere_legs(samples["wall"], center, radius, ground, center_z)
+        sphere = {"center_z": float(center_z), "radius": float(radius), **legs}
+        roof = "sphere"
         rise = 0.0
+        z_base = ground
+        wall_h = 0.0
+        total = center_z + radius - ground
+        rim = None
+        girders = []
+        base_ring = None
+        stair = None
     else:
-        rise, total = _roof_height(roof_cloud, center, radius, z_base, z_top, roof)
-    rim = _top_rim(samples["roof"], samples["outer"], samples["all"], center, radius, z_top)
-    girders = _wind_girders(samples["outer"], center, radius, z_base, z_top)
-    base_ring = _base_ring(samples["outer"], center, radius, z_base)
-    stair = _spiral_stair(samples["outer"], center, radius, z_base, wall_h)
+        if fit["ok"]:
+            roof = fit["roof"]
+            wall_top = fit["wall_top"]
+            if z_top - wall_top > 0.3:
+                handrail = float(z_top - wall_top)
+                z_top = wall_top
+                wall_h = z_top - z_base
+            rise = 0.0 if roof == "flat" else max(0.0, fit["crown"] - z_top)
+        else:
+            z_max = float(np.percentile(roof_cloud[:, 2], 99.5)) if len(roof_cloud) else z_top
+            rise = max(0.0, max(wall_h, z_max - z_base) - wall_h)
+            roof = _classify_roof(roof_cloud, center, radius, z_top, rise)
+            roof = _cone_or_dome(roof, roof_cloud, center, radius, z_top)
+            if roof == "flat":
+                rise = 0.0
+            else:
+                rise, _total = _roof_height(roof_cloud, center, radius, z_base, z_top, roof)
+        total = wall_h + rise
+        rim = _top_rim(samples["roof"], samples["outer"], samples["all"], center, radius, z_top)
+        girders = _wind_girders(samples["outer"], center, radius, z_base, z_top)
+        base_ring = _base_ring(samples["outer"], center, radius, z_base)
+        stair = _spiral_stair(samples["outer"], center, radius, z_base, wall_h)
     return Tank(
         block=block,
         srs=srs,
@@ -795,6 +825,8 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
         wind_girders=girders,
         base_ring=base_ring,
         spiral_stair=stair,
+        handrail_height=handrail,
+        sphere=sphere,
     )
 
 
@@ -836,6 +868,205 @@ def _classify_roof(roof_pts: np.ndarray, center, radius: float, z_top: float, ri
     if quad[0] < 0 and rms_q <= rms_l:
         return "dome"
     return "flat"
+
+
+def _roof_analysis(roof_pts, center, radius: float, z_top: float) -> dict:
+    """Roof shape from the lower envelope of the upward-facing roof surface.
+
+    Handrails, walkways, vents and the central platform sit *on* the roof and
+    cover only part of each ring, so a low percentile per radial ring follows
+    the roof plate. The wall-shell top usually includes the handrail around
+    the eave; the roof plate near the rim gives the true wall top.
+
+    Three models are fitted to the ring heights for u = r/R in [0.1, 0.95],
+    each with a few rounds of outlier trimming: flat, cone (linear in u) and
+    spherical cap (dome, exact cap with fitted rise).
+    """
+    out = {"ok": False}
+    if len(roof_pts) < 60:
+        return out
+    rho = np.hypot(roof_pts[:, 0] - center[0], roof_pts[:, 1] - center[1]) / radius
+    z = roof_pts[:, 2]
+    up = (rho < 0.97) & (z > z_top - 3.0)
+    rim = up & (rho > 0.85)
+    if rim.sum() < 20:
+        return out
+    eave = float(np.percentile(z[rim], 30))
+    wall_top = eave if z_top - eave > 0.3 else z_top
+    edges = np.arange(0.10, 0.951, 0.05)
+    us, zs = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = up & (rho >= lo) & (rho < hi) & (z > wall_top - 0.5)
+        if sel.sum() >= 8:
+            us.append(0.5 * (lo + hi))
+            zs.append(float(np.percentile(z[sel], 30)))
+    if len(us) < 6:
+        return out
+    u = np.array(us)
+    zz = np.array(zs)
+
+    def trimmed(predict):
+        keep = np.ones(len(u), dtype=bool)
+        best = None
+        for _ in range(4):
+            pred, params = predict(u[keep], zz[keep])
+            full = pred(u)
+            err = zz - full
+            rms = float(np.sqrt(np.mean(err[keep] ** 2)))
+            best = (rms, full, params)
+            new = np.abs(err) <= max(0.12, 2.5 * rms)
+            if new.sum() < max(5, int(0.6 * len(u))) or np.array_equal(new, keep):
+                break
+            keep = new
+        return best
+
+    def flat(uu, z_):
+        a = float(np.mean(z_))
+        return (lambda x: np.full(len(x), a)), {"crown": a, "at_rim": a}
+
+    def cone(uu, z_):
+        coef = np.polyfit(1.0 - uu, z_, 1)
+        return (lambda x: coef[1] + coef[0] * (1.0 - x)), {"crown": float(coef[1] + coef[0]), "at_rim": float(coef[1])}
+
+    def cap(uu, z_):
+        best = None
+        for h in np.arange(0.05, 1.2 * radius, 0.02):
+            rs = (radius * radius + h * h) / (2.0 * h)
+            shape = np.sqrt(np.maximum(rs * rs - (uu * radius) ** 2, 0.0)) - (rs - h)
+            a = float(np.mean(z_ - shape))
+            e = float(np.mean((z_ - shape - a) ** 2))
+            if best is None or e < best[0]:
+                best = (e, h, rs, a)
+        _e, h, rs, a = best
+
+        def pred(x):
+            return a + np.sqrt(np.maximum(rs * rs - (x * radius) ** 2, 0.0)) - (rs - h)
+
+        return pred, {"crown": float(a + h), "sphere_radius": float(rs), "at_rim": float(a)}
+
+    fits = {"flat": trimmed(flat), "cone": trimmed(cone), "dome": trimmed(cap)}
+    rise_c = fits["cone"][2]["crown"] - wall_top
+    rise_d = fits["dome"][2]["crown"] - wall_top
+    if max(rise_c, rise_d) < max(0.15, 0.03 * radius):
+        roof = "flat"
+    else:
+        roof = "dome" if fits["dome"][0] <= fits["cone"][0] else "cone"
+    if z_top - eave > 0.3:
+        # Handrail above the eave: the wall ends where the roof plate meets it.
+        wall_top = float(min(z_top, max(eave - 0.5, fits[roof][2]["at_rim"])))
+    out.update(
+        ok=True,
+        roof=roof,
+        wall_top=float(wall_top),
+        crown=float(fits[roof][2]["crown"]) if roof != "flat" else float(wall_top),
+        rms_flat=fits["flat"][0],
+        rms_cone=fits["cone"][0],
+        rms_dome=fits["dome"][0],
+        dome_sphere_radius=fits["dome"][2].get("sphere_radius"),
+        profile=list(zip(u.tolist(), zz.tolist())),
+    )
+    if roof == "flat":
+        out["crown"] = float(max(wall_top, fits["flat"][2]["crown"]))
+    return out
+
+
+def _sphere_check(all_pts, center, radius: float, z_base: float, z_top: float) -> dict:
+    """Is this a spherical tank of the fitted radius?
+
+    Searches the sphere centre height that puts most of the surface above the
+    equator on a sphere of the wall radius. A cylinder with a dome or cone
+    roof has its cap far inside that sphere; a sphere does not.
+    """
+    out = {"sphere": False}
+    if radius < 3.0 or len(all_pts) < 200:
+        return out
+    rho = np.hypot(all_pts[:, 0] - center[0], all_pts[:, 1] - center[1])
+    z = all_pts[:, 2]
+    sel = rho < radius * 1.02
+    rho, z = rho[sel], z[sel]
+    tol = max(0.15, 0.03 * radius)
+    best = None
+    for zc in np.arange(z_base, z_top + 0.5 * radius, 0.1):
+        upper = z > zc + 0.3 * radius
+        if upper.sum() < 50:
+            continue
+        on = upper & (np.abs(np.hypot(rho, z - zc) - radius) < tol)
+        frac = on.sum() / upper.sum()
+        if best is None or on.sum() > best[0]:
+            best = (int(on.sum()), float(zc), float(frac))
+    if best is None:
+        return out
+    count, zc, frac = best
+    upper = z > zc + 0.3 * radius
+    top = float(np.percentile(z[upper], 99)) if upper.any() else zc
+    out.update(center_z=zc, upper_fraction=frac, top=top, radius=float(radius))
+    # Most of the upper surface on the sphere, it reaches near the pole, and
+    # it rises well above the last vertical stretch (a dome roof does not).
+    # Where the surface stops being a vertical wall at the fitted radius:
+    # the equator for a sphere, the eave/handrail for a cylinder.
+    cyl = np.abs(rho - radius) < tol
+    cyl_top = float(np.percentile(z[cyl], 98)) if cyl.sum() >= 20 else z_top
+    out["cylinder_top"] = cyl_top
+    is_sphere = frac >= 0.38 and top >= zc + 0.85 * radius and top - cyl_top >= 0.5 * radius and count >= 100
+    out["sphere"] = bool(is_sphere)
+    if is_sphere:
+        # Refine centre height and radius on the upper hemisphere; the wall
+        # fit is pulled by support legs and mesh skirts under the equator.
+        near = (z > zc + 0.2 * radius) & (np.abs(np.hypot(rho, z - zc) - radius) < 0.6)
+        r_n, z_n = rho[near], z[near]
+        best_e = None
+        for dz in np.arange(-0.6, 0.61, 0.05):
+            d = np.hypot(r_n, z_n - (zc + dz))
+            for rr in np.arange(radius - 0.6, radius + 0.61, 0.02):
+                e = float(np.median(np.abs(d - rr)))
+                if best_e is None or e < best_e[0]:
+                    best_e = (e, zc + dz, rr)
+        out.update(center_z=float(best_e[1]), radius=float(best_e[2]))
+    return out
+
+
+def _sphere_legs(wall_pts, center, radius: float, ground: float, center_z: float) -> dict:
+    """Support columns under a spherical tank: peaks in the azimuth histogram
+    of vertical faces between the ground and the lower hemisphere."""
+    if len(wall_pts) == 0:
+        return {"legs": []}
+    rho = np.hypot(wall_pts[:, 0] - center[0], wall_pts[:, 1] - center[1])
+    z = wall_pts[:, 2]
+    sel = (rho > 0.6 * radius) & (rho < 1.1 * radius) & (z > ground + 0.5) & (z < center_z - 0.6 * radius)
+    if sel.sum() < 100:
+        return {"legs": []}
+    ang = np.degrees(np.arctan2(wall_pts[sel, 1] - center[1], wall_pts[sel, 0] - center[0])) % 360.0
+    bins = 72
+    hist, _ = np.histogram(ang, bins=bins, range=(0.0, 360.0))
+    peak = hist > 2.5 * max(1.0, float(np.median(hist)))
+    if peak.all() or not peak.any():
+        return {"legs": []}
+    start = int(np.flatnonzero(~peak)[0])
+    order = [(start + k) % bins for k in range(bins)]
+    runs, current = [], []
+    for b in order:
+        if peak[b]:
+            current.append(b)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    width = 360.0 / bins
+    legs = []
+    for run in runs:
+        w = hist[run].astype(float)
+        a = np.radians((np.array(run) + 0.5) * width)
+        mean = np.degrees(np.arctan2((np.sin(a) * w).sum(), (np.cos(a) * w).sum())) % 360.0
+        legs.append(float(mean))
+    if not (3 <= len(legs) <= 24):
+        return {"legs": []}
+    return {
+        "legs": sorted(legs),
+        "leg_rho": float(np.median(rho[sel])),
+        "leg_radius": 0.3,
+        "leg_bottom": float(ground),
+    }
 
 
 def _cone_or_dome(roof: str, roof_pts, center, radius: float, z_top: float) -> str:

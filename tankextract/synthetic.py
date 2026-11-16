@@ -231,11 +231,12 @@ def _cone(cx, cy, z_rim, radius, rise, n=80) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _dome(cx, cy, z_rim, radius, rise, n=80, n_lat=10) -> tuple[np.ndarray, np.ndarray]:
+    # Spherical cap (拱顶): the usual fixed dome roof.
+    rs = (radius * radius + rise * rise) / (2.0 * rise)
     rings = []
     for i in range(n_lat + 1):
-        theta = (i / n_lat) * (math.pi / 2)
-        rho = radius * math.cos(theta)
-        z = z_rim + rise * math.sin(theta)
+        rho = radius * (1.0 - i / n_lat)
+        z = z_rim + math.sqrt(max(rs * rs - rho * rho, 0.0)) - (rs - rise)
         if i == n_lat:
             rings.append([(cx, cy, z)])
         else:

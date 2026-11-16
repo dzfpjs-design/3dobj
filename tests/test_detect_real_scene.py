@@ -79,3 +79,84 @@ def test_single_component_fit_alone_misses_linked_tanks():
     config = DetectConfig(wall_extent_levels=(0.0,), split_components=False)
     tanks = _detect(config, tall_link=True)
     assert len([t for t in tanks if abs(t.radius - 6.0) < 0.1]) < 2
+
+
+def _uv_sphere(cx, cy, cz, radius, n=120, rings=60):
+    verts = [(cx, cy, cz - radius)]
+    for i in range(1, rings):
+        phi = -np.pi / 2 + np.pi * i / rings
+        for k in range(n):
+            a = 2 * np.pi * k / n
+            verts.append((cx + radius * np.cos(phi) * np.cos(a), cy + radius * np.cos(phi) * np.sin(a), cz + radius * np.sin(phi)))
+    verts.append((cx, cy, cz + radius))
+    tris = []
+    for k in range(n):
+        tris.append((0, 1 + (k + 1) % n, 1 + k))
+    for i in range(rings - 2):
+        base = 1 + i * n
+        for k in range(n):
+            a, b = base + k, base + (k + 1) % n
+            tris.append((a, b, b + n))
+            tris.append((a, b + n, a + n))
+    top = len(verts) - 1
+    last = 1 + (rings - 2) * n
+    for k in range(n):
+        tris.append((last + k, last + (k + 1) % n, top))
+    return np.asarray(verts, dtype=float), np.asarray(tris, dtype=np.int64)
+
+
+def _cap(cx, cy, z_rim, radius, rise, n=160, rings=30):
+    rs = (radius**2 + rise**2) / (2 * rise)
+    verts, tris = [], []
+    for i in range(rings + 1):
+        rho = radius * (1 - i / rings)
+        z = z_rim + np.sqrt(rs**2 - rho**2) - (rs - rise)
+        if i == rings:
+            verts.append((cx, cy, z))
+        else:
+            for k in range(n):
+                a = 2 * np.pi * k / n
+                verts.append((cx + rho * np.cos(a), cy + rho * np.sin(a), z))
+    for i in range(rings - 1):
+        for k in range(n):
+            a, b = i * n + k, i * n + (k + 1) % n
+            tris.append((a, a + n, b))
+            tris.append((b, a + n, b + n))
+    apex = len(verts) - 1
+    last = (rings - 1) * n
+    for k in range(n):
+        tris.append((last + k, apex, last + (k + 1) % n))
+    return np.asarray(verts, dtype=float), np.asarray(tris, dtype=np.int64)
+
+
+def test_sphere_on_legs_and_dome_with_handrail():
+    ground = 7.5
+    parts = [_terrain()]
+    # Spherical tank R=6 on 8 legs, bottom 3 m above ground.
+    zc = ground + 3.0 + 6.0
+    parts.append(_uv_sphere(20.0, 20.0, zc, 6.0))
+    for k in range(8):
+        a = 2 * np.pi * k / 8
+        parts.append(_cylinder(20.0 + 5.85 * np.cos(a), 20.0 + 5.85 * np.sin(a), ground, zc, 0.3, n=16, nh=12))
+    # Dome-roof tank: wall 12 m, spherical cap rise 1.6 m, 1.1 m handrail on the eave.
+    parts.append(_cylinder(55.0, 20.0, ground, ground + 12.0, 8.0, n=200, nh=24))
+    parts.append(_cylinder(55.0, 20.0, ground + 12.0, ground + 13.1, 7.97, n=200, nh=2))
+    parts.append(_cap(55.0, 20.0, ground + 12.0, 8.0, 1.6))
+    vertices, triangles = _concat(parts)
+    config = DetectConfig()
+    acc = SceneAccumulator(config)
+    acc.add_mesh("t", vertices, triangles, ORIGIN)
+    absolute = vertices + np.array(ORIGIN)
+    tanks = refine_candidates(acc.candidates(), [(absolute, triangles)], config, acc.ground_near, "T", "EPSG:4548", ORIGIN)
+    by_x = {round(t.center_x - ORIGIN[0]): t for t in tanks}
+    assert set(by_x) == {20, 55}
+    sphere = by_x[20]
+    assert sphere.roof_type == "sphere"
+    assert abs(sphere.sphere["radius"] - 6.0) < 0.15
+    assert abs(sphere.sphere["center_z"] - zc) < 0.2
+    assert len(sphere.sphere["legs"]) == 8
+    dome = by_x[55]
+    assert dome.roof_type == "dome"
+    assert abs(dome.wall_height - 12.0) < 0.15
+    assert abs(dome.roof_rise - 1.6) < 0.15
+    assert dome.handrail_height is not None and abs(dome.handrail_height - 1.1) < 0.2

@@ -195,7 +195,7 @@ def _write_candidate_report(debug: list[dict], tanks: list[Tank], output: Path) 
                 f"{rec['ground']:.2f}" if "ground" in rec else "",
                 f"{rec['interior_ratio']:.3f}" if "interior_ratio" in rec else "",
                 f"{rec['wall_fill']:.2f}" if "wall_fill" in rec else "",
-                json.dumps(rec.get("roof_profile", [])),
+                json.dumps({"profile": rec.get("roof_profile", []), "fit": rec.get("roof_fit", {})}),
             ])
 
 
@@ -294,6 +294,13 @@ def _spec(tanks: list[Tank], options: RunOptions) -> dict:
                     }
                 ),
                 "spiral_stair": tank.spiral_stair,
+                "handrail_height": tank.handrail_height,
+                "sphere": (
+                    None
+                    if not tank.sphere
+                    else {**tank.sphere, "center_z": tank.sphere["center_z"] - tank.origin[2],
+                          "leg_bottom": tank.sphere.get("leg_bottom", tank.z_base) - tank.origin[2]}
+                ),
                 "epsg": tank.srs,
                 "rms_m": tank.rms,
             }
@@ -312,6 +319,8 @@ def _export_blender(blender: str, spec_path: Path, output: Path, merge: bool, lo
     cmd = [
         blender,
         "-b",
+        "--python-exit-code",
+        "1",
         "-P",
         str(script),
         "--",
@@ -329,4 +338,7 @@ def _export_blender(blender: str, spec_path: Path, output: Path, merge: bool, lo
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-2000:]
         raise RuntimeError(f"Blender 导出失败（退出码 {proc.returncode}）。详见 {log_path}\n{tail}")
+    if not (output / "blender_report.json").exists():
+        tail = (proc.stderr or proc.stdout or "")[-2000:]
+        raise RuntimeError(f"Blender 未写出 FBX（脚本出错）。详见 {log_path}\n{tail}")
     log(f"FBX 已写入 {output}")

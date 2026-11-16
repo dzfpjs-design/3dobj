@@ -108,3 +108,36 @@ def test_blender_fbx_local_and_absolute(tmp_path):
                 assert max(abs(v) for v in item["sample_vertex"]) < 100
             else:
                 assert item["sample_vertex"][0] > 1000
+
+
+def test_blender_sphere_and_handrail(tmp_path):
+    """Spherical tanks on legs and handrails come out as their own pieces."""
+    blender = resolve_blender(BLENDER)
+    if blender is None:
+        return
+    import subprocess
+
+    block = generate_scene(tmp_path / "scene")
+    out = tmp_path / "out"
+    run(block, out, RunOptions(reader="python", no_blender=True, local_offset=True), log=lambda *_a, **_k: None)
+    spec = json.loads((out / "tanks_spec.json").read_text(encoding="utf-8"))
+    base = spec["tanks"][0]
+    sphere = dict(base, id="Tank_S", roof_type="sphere", wall_height=0.0, roof_rise=0.0, handrail_height=None)
+    sphere["sphere"] = {"center_z": base["z_base"] + 9.0, "radius": 6.0, "legs": [0, 90, 180, 270],
+                        "leg_rho": 5.8, "leg_radius": 0.3, "leg_bottom": base["z_base"]}
+    railed = dict(base, id="Tank_H", roof_type="dome", roof_rise=1.5, handrail_height=1.1, sphere=None)
+    spec["tanks"] = [sphere, railed]
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / "tankextract" / "blender" / "export_tanks.py"
+    fbx = tmp_path / "fbx"
+    fbx.mkdir()
+    subprocess.run([blender, "-b", "--python-exit-code", "1", "-P", str(script), "--", "--spec", str(spec_path),
+                    "--output", str(fbx)], check=True, capture_output=True)
+    report = json.loads((fbx / "blender_report.json").read_text(encoding="utf-8"))
+    objects = {item["path"].rsplit("/", 1)[-1]: item["objects"] for item in report["files"]}
+    assert "Tank_S_Sphere" in objects["Tank_S.fbx"]
+    assert sum(name.startswith("Tank_S_Leg_") for name in objects["Tank_S.fbx"]) == 4
+    assert "Tank_H_Handrail" in objects["Tank_H.fbx"]
+    for item in report["files"]:
+        assert item["reimport_vertex"] is not None

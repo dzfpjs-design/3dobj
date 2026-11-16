@@ -14,8 +14,7 @@ mkdir -p "$HOME/3dobj_env"
 curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest \
   | tar -C "$HOME/3dobj_env" -xvj bin/micromamba
 
-# 2. conda-forge 的 OpenSceneGraph 3.6.5 + Python 3.11 + numpy + scipy
-#    （检测用 scipy.spatial.cKDTree 把连在一起的筒壁拆成多个圆）
+# 2. conda-forge 的 OpenSceneGraph 3.6.5 + Python 3.11 + numpy
 "$HOME/3dobj_env/bin/micromamba" create -y -p "$HOME/3dobj_env/osg" -c conda-forge \
   python=3.11 numpy scipy "openscenegraph=3.6.5"
 
@@ -136,7 +135,7 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 
 FBX 自定义属性（字符串，避免再被截成单精度）：`epsg`、`srs_origin_x/y/z`、`coordinate_mode`、`radius_m`、`wall_height_m`、`roof_type`、`rms_m`。
 
-CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_height_m、total_height_m、roof_type（`flat` 平顶 / `cone` 锥顶 / `dome` 穹顶）、roof_rise_m、rms_m、coverage_deg，以及顶圈、抗风圈、底圈、螺旋梯（能稳定看出来时）。
+CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_height_m、total_height_m、roof_type（`flat` 平顶 / `cone` 锥顶 / `dome` 球冠拱顶 / `sphere` 球罐）、roof_rise_m、rms_m、coverage_deg，以及顶圈、抗风圈、底圈、螺旋梯（能稳定看出来时），handrail_height_m（护栏高）、sphere_center_z、sphere_leg_count（球罐）。
 
 ## 检测在做什么
 
@@ -144,7 +143,8 @@ CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_he
 2. 相邻的竖直面分箱连成簇，每簇做一次圆拟合（竖直跨度当权重，再丢掉半径方向的离群点）。真实厂区里树、栏杆、管廊、地面杂物的竖直面会把几乎整个场景连成一个大簇，所以还会只保留竖直跨度 ≥1、2、3、5、8 m 的分箱分别再连簇一次；同一个罐在几层里都找到时取拟合最好的一次。
 3. 一个簇拟合不成一个圆时（几个罐被走道、管廊、楼梯连在一起），用 RANSAC 在簇里逐个找圆，每找到一个就把它从簇里拿掉再找下一个。
 4. 第二遍只重读和候选罐相交的瓦片，在筒壁半径附近收紧拟合，得到圆心、半径、壁高、总高和 RMS。然后剔除：罐底高出周围地面 3 m 以上的（楼顶风机筒等），壁高超过 4 倍直径的（烟囱、塔器），圆柱内部中段有大量网格的（工艺装置里的假圆，真罐是封闭壳体），以及筒壁在高度方向不连续的。地面高程取罐外一圈地面的低值，不再误取罐顶。
-5. 罐顶用半径–高程的直线 / 二次曲线区分平顶、锥顶、穹顶，再按径向中值剖面复核锥顶 / 穹顶（半径一半处，锥顶约降到矢高的一半，穹顶仍在约 3/4）。顶圈要伸出筒壁才记录；抗风圈是筒壁外侧、沿圆周一圈的窄环；底圈在底部；螺旋梯是筒外一条随高度转动的窄带。
+5. 罐顶：对朝上的屋面按半径分环取低分位高程（栏杆、走道、中心平台只占每一环的一小部分，不会抬高这条下包络），分别拟合平顶、锥顶（线性）和球冠穹顶（拱顶，按实测矢高求球半径），取残差最小者。罐壁顶部常有一圈约 1.1 m 的护栏，筒壁顶取屋面与罐壁的交线，护栏高度单独记为 `handrail_height_m` 并在白模里做成一圈薄带。
+6. 球罐：若筒壁以上的表面大部分落在以筒壁半径为半径的球面上、并接近球顶，判为球罐（`roof_type=sphere`），输出球心高程、球半径和支柱（按支柱处竖直面的方位直方图计数），白模为球体加支柱。顶圈要伸出筒壁才记录；抗风圈是筒壁外侧、沿圆周一圈的窄环；底圈在底部；螺旋梯是筒外一条随高度转动的窄带。
 
 合成场景上半径和高程的误差大约是几毫米到两厘米，RMS 约 6–18 mm。详见 `validation_report.md`。
 
@@ -159,7 +159,7 @@ CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_he
 - 绝对坐标的 FBX 顶点是 Blender 的 float32。EPSG:4548 的 Y 大约在 3.5×10⁶，float32 的步长约 0.25 m，厘米级尺寸保不住。要可编辑的白模请加 `--local-offset`；测量值以 geojson/csv 的双精度绝对坐标为准。
 - 内置解析器不覆盖 OSG 的全部类。没有 binary bracket 的文件若出现未实现的类，该瓦片会失败并尝试 osgconv。inline schema（attribute bit 0x2）直接拒绝。
 - 一个 zip 视为一个块、一个原点。跨两个块的罐不会被拼成一个。
-- 球罐不会被收成圆柱。半径小于 2 m 的立式小容器默认不收（`--min-radius 1.5` 可放开，但会混进立管、阀门井等）。
+- 球罐按上半球拟合；下半球常被照片模型糊成竖直“裙边”，不参与球半径拟合。半径小于 2 m 的立式小容器默认不收（`--min-radius 1.5` 可放开，但会混进立管、阀门井等）。
 - 带高穹顶、外有平台管线的罐，照片模型的筒壁本身有 ±0.2 m 的起伏，半径和壁高的不确定度相应变大。
 
 ## 测试
