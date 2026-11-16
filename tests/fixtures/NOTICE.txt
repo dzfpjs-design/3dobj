@@ -1,0 +1,11 @@
+Parser fixtures, redistributed for regression tests.
+
+tile_root.osgb, tile_l17.osgb, metadata.xml
+  From Sogrey/Cesium-start-Example (MIT), SampleData/models/dayanta_osgb.
+  ContextCapture-style OSGB, OpenSceneGraph SO version 91.
+
+blockx_l19.osgb, blockx_meta.xml
+  From XEMPZ/GeoRefine sample_data (OSGB SO version 131, binary brackets, EPSG:4547).
+
+These files are not the user's 来安 survey. They only check that the reader
+reaches the end of a real file and returns finite local coordinates.

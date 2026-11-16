@@ -1,0 +1,290 @@
+"""Stream tiles, detect tanks, write sidecars and Blender FBX."""
+
+from __future__ import annotations
+
+import json
+import posixpath
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+from tankextract.detect import DetectConfig, SceneAccumulator, refine_candidates
+from tankextract.discover import Block, discover_blocks
+from tankextract.model import Tank
+from tankextract.osgb_reader import OsgbError
+from tankextract.sidecar import write_sidecars
+from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv
+
+_LEVEL_RE = re.compile(r"_L(\d+)(?:_|\.)", re.IGNORECASE)
+
+
+@dataclass
+class RunOptions:
+    reader: str = "auto"
+    osgconv: str | None = None
+    blender: str | None = None
+    lod: str = "finest"
+    min_radius: float = 1.5
+    max_radius: float = 80.0
+    min_height: float = 2.0
+    max_height: float = 80.0
+    max_rms: float = 0.20
+    min_coverage: float = 260.0
+    cell_size: float = 0.25
+    local_offset: bool = False
+    merge: bool = True
+    segments: int = 96
+    no_blender: bool = False
+    limit_tiles: int | None = None
+
+
+def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
+    blocks = discover_blocks(Path(input_path))
+    osgconv = resolve_osgconv(options.osgconv)
+    if options.reader == "osgconv" and not osgconv:
+        raise FileNotFoundError(
+            "指定了 --reader osgconv，但没有找到可执行文件。"
+            "已查找 PATH 和 ~/3dobj_env/osg/bin/osgconv，也可用 --osgconv 指定。"
+        )
+    config = DetectConfig(
+        min_radius=options.min_radius,
+        max_radius=options.max_radius,
+        min_height=options.min_height,
+        max_height=options.max_height,
+        max_rms=options.max_rms,
+        min_coverage=options.min_coverage,
+        cell_size=options.cell_size,
+    )
+    tanks: list[Tank] = []
+    stats = {"python": 0, "osgconv": 0, "tiles": 0}
+    for block in blocks:
+        log(
+            f"块 {block.label}: SRS={block.srs} 原点={block.origin[0]:.3f},"
+            f"{block.origin[1]:.3f},{block.origin[2]:.3f} 瓦片文件 {len(block.osgb_names)}"
+        )
+        found = _detect_block(block, options, config, osgconv, stats, log)
+        tanks.extend(found)
+    tanks.sort(key=lambda item: (item.block, round(item.center_x, 2), round(item.center_y, 2)))
+    for index, tank in enumerate(tanks, start=1):
+        tank.name = f"Tank_{index:03d}"
+    output.mkdir(parents=True, exist_ok=True)
+    mode = "local" if options.local_offset else "absolute"
+    write_sidecars(tanks, output, mode)
+    spec_path = output / "tanks_spec.json"
+    spec_path.write_text(
+        json.dumps(_spec(tanks, options), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output / "read_stats.json").write_text(
+        json.dumps({"reader_requested": options.reader, "osgconv": osgconv, **stats}, indent=2),
+        encoding="utf-8",
+    )
+    log(f"检测到 {len(tanks)} 个罐。读取统计: {stats}")
+    if options.no_blender:
+        log("已跳过 Blender（--no-blender）。侧车文件和 tanks_spec.json 已写出。")
+        return tanks
+    blender = resolve_blender(options.blender)
+    if not blender:
+        raise FileNotFoundError(
+            "未找到 Blender。macOS 默认查找 /Applications/Blender.app/Contents/MacOS/Blender，"
+            "也可以把 blender 放入 PATH，或传入 --blender。"
+        )
+    _export_blender(blender, spec_path, output, options.merge, log)
+    return tanks
+
+
+def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgconv, stats, log) -> list[Tank]:
+    selected = _select_tiles(block.osgb_names, options.lod)
+    if options.limit_tiles:
+        selected = selected[: options.limit_tiles]
+    names = set(block.osgb_names)
+    accumulator = SceneAccumulator(config)
+    loaded: list[tuple[str, str]] = []  # name, reader used
+
+    queue = list(selected)
+    seen: set[str] = set()
+    while queue:
+        name = queue.pop(0)
+        if name in seen or name not in names:
+            continue
+        seen.add(name)
+        contents, used = _read_tile(block, name, options.reader, osgconv)
+        stats[used] = stats.get(used, 0) + 1
+        stats["tiles"] += 1
+        children = []
+        if options.lod == "finest":
+            for child in contents.child_files:
+                resolved = _resolve_existing(name, child, names)
+                if resolved and resolved not in seen:
+                    children.append(resolved)
+        if children:
+            # This file still has a finer level on disk. Do not use its mesh.
+            queue.extend(children)
+            continue
+        for mesh in contents.meshes:
+            accumulator.add_mesh(name, mesh.vertices, mesh.triangles, block.origin)
+        loaded.append((name, used))
+        if stats["tiles"] % 25 == 0:
+            log(f"  已处理 {stats['tiles']} 个瓦片…")
+
+    rough = accumulator.candidates()
+    log(f"  {block.label}: 候选圆柱 {len(rough)}，参与几何的瓦片 {len(loaded)}")
+    if not rough:
+        return []
+    # Second pass: only tiles whose box overlaps a candidate.
+    tiles = []
+    for name, _used in loaded:
+        box = _box_for(accumulator, name)
+        if box is None or not _overlaps_any(box, rough):
+            continue
+        contents, used = _read_tile(block, name, "python" if used == "python" else options.reader, osgconv)
+        for mesh in contents.meshes:
+            absolute = np.array(mesh.vertices, dtype=np.float64, copy=True)
+            absolute[:, 0] += block.origin[0]
+            absolute[:, 1] += block.origin[1]
+            absolute[:, 2] += block.origin[2]
+            tiles.append((absolute, mesh.triangles))
+    return refine_candidates(
+        rough,
+        tiles,
+        config,
+        accumulator.ground_z_at,
+        block.label,
+        block.srs,
+        block.origin,
+    )
+
+
+def _box_for(accumulator: SceneAccumulator, name: str):
+    boxes = [box for tile, box in accumulator.tile_boxes if tile == name]
+    if not boxes:
+        return None
+    stacked = np.stack(boxes, axis=0)
+    return np.vstack([stacked[:, 0, :].min(axis=0), stacked[:, 1, :].max(axis=0)])
+
+
+def _overlaps_any(box: np.ndarray, candidates) -> bool:
+    for candidate in candidates:
+        margin = candidate.radius + 3.5
+        if box[1, 0] < candidate.cx - margin or box[0, 0] > candidate.cx + margin:
+            continue
+        if box[1, 1] < candidate.cy - margin or box[0, 1] > candidate.cy + margin:
+            continue
+        return True
+    return False
+
+
+def _read_tile(block: Block, name: str, reader: str, osgconv: str | None):
+    data = block.read_bytes(name)
+    try:
+        return load_osgb_bytes(data, reader=reader, osgconv=osgconv, filename=posixpath.basename(name))
+    except OsgbError as exc:
+        raise OsgbError(f"{name}: {exc}") from exc
+
+
+def _resolve_existing(parent: str, child: str, names: set[str]) -> str | None:
+    joined = normalize_child(parent, child)
+    if joined in names:
+        return joined
+    base = posixpath.basename(child.replace("\\", "/"))
+    parent_dir = posixpath.dirname(parent)
+    sibling = posixpath.join(parent_dir, base) if parent_dir else base
+    if sibling in names:
+        return sibling
+    return None
+
+
+def _select_tiles(names: list[str], lod: str) -> list[str]:
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(posixpath.dirname(name), []).append(name)
+    chosen: list[str] = []
+    want = None if lod == "finest" else int(lod)
+    for files in groups.values():
+        levels = [(_level(name), name) for name in files]
+        if want is None:
+            deepest = max(level for level, _ in levels)
+            chosen.extend(name for level, name in levels if level == deepest)
+        else:
+            chosen.extend(name for level, name in levels if level == want)
+    return chosen
+
+
+def _level(name: str) -> int:
+    found = _LEVEL_RE.findall(posixpath.basename(name))
+    if not found:
+        return -1
+    return int(found[-1])
+
+
+def _spec(tanks: list[Tank], options: RunOptions) -> dict:
+    records = []
+    for tank in tanks:
+        lx, ly = tank.center_local
+        records.append(
+            {
+                "id": tank.name,
+                "origin": list(tank.origin),
+                "center_local": [lx, ly],
+                "z_base": tank.z_base_local,
+                "radius": tank.radius,
+                "wall_height": tank.wall_height,
+                "total_height": tank.total_height,
+                "roof_type": tank.roof_type,
+                "roof_rise": tank.roof_rise,
+                "top_rim_width": tank.top_rim_width,
+                "wind_girders": [
+                    {
+                        "z": item["z"] - tank.origin[2],
+                        "protrusion": item["protrusion"],
+                        "height": item.get("height", 0.15),
+                    }
+                    for item in tank.wind_girders
+                ],
+                "base_ring": (
+                    None
+                    if not tank.base_ring
+                    else {
+                        "protrusion": tank.base_ring["protrusion"],
+                        "height": tank.base_ring.get("height", 0.22),
+                    }
+                ),
+                "spiral_stair": tank.spiral_stair,
+                "epsg": tank.srs,
+                "rms_m": tank.rms,
+            }
+        )
+    return {
+        "coordinate_mode": "local" if options.local_offset else "absolute",
+        "segments": options.segments,
+        "tanks": records,
+    }
+
+
+def _export_blender(blender: str, spec_path: Path, output: Path, merge: bool, log) -> None:
+    import subprocess
+
+    script = Path(__file__).resolve().parent / "blender" / "export_tanks.py"
+    cmd = [
+        blender,
+        "-b",
+        "-P",
+        str(script),
+        "--",
+        "--spec",
+        str(spec_path),
+        "--output",
+        str(output),
+    ]
+    if merge:
+        cmd.append("--merge")
+    log("调用 Blender 导出 FBX…")
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    log_path = output / "blender.log"
+    log_path.write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "")[-2000:]
+        raise RuntimeError(f"Blender 导出失败（退出码 {proc.returncode}）。详见 {log_path}\n{tail}")
+    log(f"FBX 已写入 {output}")

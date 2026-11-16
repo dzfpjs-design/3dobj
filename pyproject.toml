@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tankextract"
+version = "1.0.0"
+description = "从倾斜摄影 OSGB 中提取圆柱罐并在 Blender 中重建白模"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.22"]
+
+[project.scripts]
+tankextract = "tankextract.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tankextract*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
