@@ -43,6 +43,7 @@ class DetectConfig:
     # A tank is a closed shell: almost no mesh inside it between floor and
     # roof. Circles traced through process-plant clutter fail this.
     max_interior_ratio: float = 0.2
+    max_interior_ratio_clean: float = 0.25  # for a complete, tightly fitted, unbroken shell
     # Cone / dome roof rise limit, in radii (real roofs: about 0.1-0.6 R).
     max_roof_rise: float = 1.0
     # Mean fraction of the wall height present per 10-degree sector.
@@ -778,7 +779,14 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
     info.update(interior_ratio=interior, wall_fill=fill)
     if sphere_fit.get("sphere"):
         pass  # a sphere's own lower hemisphere lies inside the cylinder test volume
-    elif interior > config.max_interior_ratio:
+    elif interior > config.max_interior_ratio and not (
+        # a clean, complete shell (unbroken wall, full circle, tight fit) tolerates a little
+        # more stray mesh inside: photogrammetry sometimes drapes the roof or a pipe into it
+        interior <= config.max_interior_ratio_clean
+        and fill >= 0.75
+        and coverage >= 350
+        and rms <= 0.07
+    ):
         info["reason"] = "geometry inside the cylinder (not a closed tank)"
         return None
     if fill < config.min_wall_fill:

@@ -157,7 +157,13 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
         if name in seen or name not in names:
             continue
         seen.add(name)
-        contents, used = _read_tile(block, name, options.reader, osgconv)
+        try:
+            contents, used = _read_tile(block, name, options.reader, osgconv)
+        except OsgbError as exc:
+            # A damaged tile in the source data (e.g. truncated on export) must not stop the
+            # block: skip it, and list it in read_stats.json so the gap can be checked.
+            _skip_tile(stats, name, exc, log)
+            continue
         stats[used] = stats.get(used, 0) + 1
         stats["tiles"] += 1
         children = []
@@ -186,7 +192,11 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
         box = _box_for(accumulator, name)
         if box is None or not _overlaps_any(box, rough):
             continue
-        contents, used = _read_tile(block, name, "python" if used == "python" else options.reader, osgconv)
+        try:
+            contents, used = _read_tile(block, name, "python" if used == "python" else options.reader, osgconv)
+        except OsgbError as exc:
+            _skip_tile(stats, name, exc, log)
+            continue
         for mesh in contents.meshes:
             absolute = np.array(mesh.vertices, dtype=np.float64, copy=True)
             absolute[:, 0] += block.origin[0]
@@ -337,6 +347,14 @@ def _overlaps_any(box: np.ndarray, candidates) -> bool:
             continue
         return True
     return False
+
+
+def _skip_tile(stats: dict, name: str, exc: Exception, log) -> None:
+    stats["unreadable"] = stats.get("unreadable", 0) + 1
+    bad = stats.setdefault("unreadable_tiles", [])
+    if name not in bad and len(bad) < 200:
+        bad.append(name)
+        log(f"  警告：瓦片无法读取，已跳过 {name}: {str(exc)[-160:]}")
 
 
 def _read_tile(block: Block, name: str, reader: str, osgconv: str | None):
