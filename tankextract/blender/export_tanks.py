@@ -325,6 +325,9 @@ def _part_pieces(parts, group: str) -> list:
             out.append((rest, *_vbox(cx, cy, cz - height / 2, cz + height / 2, length, width, part["yaw_deg"])))
         elif kind == "prism":
             out.append((rest, *_prism(part["polygon"], part["z0"], part["z1"])))
+        elif kind == "cylinder":
+            cx, cy = part["center"]
+            out.append((rest, *_cylinder(cx, cy, part["z0"], part["z1"], part["radius"], int(part.get("segments", 96)), caps=True)))
     return out
 
 
@@ -430,7 +433,7 @@ def _place(verts, origin, mode: str):
     return [(x + ox, y + oy, z + oz) for x, y, z in verts]
 
 
-_FLAT_PIECES = ("_handrail", "_wind_girder_", "_base_ring", "_top_rim", "_stair", "_deck", "_support_", "_brace", "_rail",
+_FLAT_PIECES = ("_foundation", "_handrail", "_wind_girder_", "_base_ring", "_top_rim", "_stair", "_deck", "_support_", "_brace", "_rail",
                 "_post_", "_pedestal_", "_platform", "_roof_walkway_", "_column_", "_beam_", "_crossbeam_", "_longbeam_",
                 "_flight_", "_landing_", "_top_deck", "_bridge_")
 

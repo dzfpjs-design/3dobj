@@ -125,6 +125,8 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 | `--no-structures` | 不检测附属结构（楼梯塔、罐顶平台 / 走道、罐壁盘梯、球罐基础墩） | 关闭 |
 | `--pipes` | 同时建管道：罐壁立管 `Tank_###_pipe_##`、单独管线 `Pipe_###`、管廊 `PipeRack_###`、罐顶之间无护栏的管道连接。默认不建（管道另用激光扫描数据建模） | 关闭 |
 
+| `--no-grounding` | 不做落地校正（见下文“落地校正”） | 关闭 |
+
 `python -m tankextract --help` 的说明是中文。
 
 ## 输出
@@ -138,7 +140,8 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
   | `Tank_001_handrail` | 罐顶周边护栏 |
   | `Tank_001_top_rim` | 顶圈 |
   | `Tank_001_wind_girder_01`… | 抗风圈 |
-  | `Tank_001_base_ring` | 底圈 |
+  | `Tank_001_base_ring` | 底圈（罐壁底部、高出罐底的钢圈） |
+  | `Tank_001_foundation` | 罐下混凝土基础（圆柱，从实测地面到基础顶面，半径 = 罐半径 + 实测外伸；罐体落在它顶面上） |
   | `Tank_001_stair` | 螺旋梯 |
   | `Tank_001_leg_01`… | 球罐支腿（每根一个对象） |
   | `Tank_001_brace_01a` / `_01b`… | 球罐支腿间 X 形拉杆（每根一个对象，上下端高程实测） |
@@ -209,13 +212,27 @@ CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_he
 - 球罐的水喷淋环管、罐顶小附件（呼吸阀、人孔、量油孔）不建模。
 - 带高穹顶、外有平台管线的罐，照片模型的筒壁本身有 ±0.2 m 的起伏，半径和壁高的不确定度相应变大。
 
+## 落地校正（v8）
+
+每个落地的对象都和 OSGB 实测地面比一次底高程，超出容差（5 cm）的贴回去：
+
+- 地面 = 对象外一圈朝上面片高程的稳健低端（面积加权 25% 分位附近 ±0.12 m 的中位数），所以路缘、踏步、设备、地上管道抬不高它。
+- 立式罐：先量罐壁外 0.6–3 m 的地面 g0；再在罐壁 −0.25…+0.35 m 环带里找高出 g0 的朝上台阶（面积加权高程直方图的峰，从低往高），方位覆盖 ≥ 40%、台阶下方的竖直侧面填满 ≥ 60% 高度时判为混凝土基础，外伸量按 0.1 m 一环往外长；最终地面取基础外沿 0.4–2.9 m。罐底在基础顶面 1 m 以内时落在基础顶面上，否则落在地面上。罐壁顶（檐口）不动，只改罐底，所以 `wall_height_m` / `total_height_m` 跟着变。基础另建一个对象 `Tank_###_foundation`。
+- 球罐：每根支腿脚外 1.1–2.6 m 单独量地面，每个基础墩从自己的地面建到墩顶；支腿落在墩顶。
+- 楼梯塔、走道支撑：矩形外 0.4–2.0 m 的地面。
+- 罐壁盘梯：梯脚 1.8 m 以内、罐壁和基础以外的地面，−1.0 m < 差值 < 1.2 m 时把梯脚贴地。
+
+每次运行写 `ground_report.csv`：object、kind、parent、stands_on（ground / foundation / pedestal top）、ground_z、support_top_z、bottom_before_z、gap_to_ground_before_m、gap_before_m（相对支撑面，正 = 飘空、负 = 陷入）、bottom_after_z、gap_after_m、note。`tanks.csv` / GeoJSON 增加 Z_base_measured、ground_gap_m、ground_gap_before_m、foundation、foundation_top_z、foundation_height_m、foundation_radius_m；`structures.csv` 增加 ground_gap_m、ground_gap_before_m。
+
+`--local-offset` 时 FBX 里的高程 = 绝对高程 − 原点 Z（CSV / GeoJSON 里一直是绝对高程）；测试里用原点 Z = 100 检查罐底、基础上下面都对得上。
+
 ## 检查白模是否封闭
 
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender -b -P tankextract/blender/check_bodies.py -- 输出目录/tanks_all.fbx bodies.json
+/Applications/Blender.app/Contents/MacOS/Blender -b -P tankextract/blender/check_bodies.py -- 输出目录/tanks_all.fbx bodies.json [--all]
 ```
 
-逐个导入 `Tank_###_body`，检查是否为一个封闭流形（每条边恰好两个面、无边界边、无非流形顶点）、有向体积为正（法线朝外），并给出世界坐标下的半径、底 / 顶高程，用来和 `tanks.csv` 对照。
+逐个导入 `Tank_###_body`，检查是否为一个封闭流形（每条边恰好两个面、无边界边、无非流形顶点）、有向体积为正（法线朝外），并给出世界坐标下的半径、底 / 顶高程，用来和 `tanks.csv` 对照。`--all` 检查所有网格对象（基础、基础墩、楼梯塔等），可以把 FBX 底高程 + 原点 Z 和 `ground_report.csv` 对照。
 
 ## 测试
 

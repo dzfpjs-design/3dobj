@@ -43,6 +43,13 @@ _CSV_FIELDS = [
     "sphere_leg_height_m",
     "sphere_leg_azimuth_deg",
     "sphere_bracing",
+    "Z_base_measured",
+    "ground_gap_m",
+    "ground_gap_before_m",
+    "foundation",
+    "foundation_top_z",
+    "foundation_height_m",
+    "foundation_radius_m",
     "sphere_leg_diameter_v5_m",
     "sphere_pedestal_height_m",
     "sphere_pedestal_size_m",
@@ -227,7 +234,11 @@ def _cgcs2000_3deg_wkt(srs: str) -> str | None:
 
 
 _STRUCTURE_FIELDS = ["id", "kind", "parent", "x", "y", "z_ground", "length_m", "width_m", "height_m", "axis_deg",
-                     "part_objects", "dims", "srs"]
+                     "ground_gap_m", "ground_gap_before_m", "part_objects", "dims", "srs"]
+
+
+def _gap(v):
+    return "" if v is None else f"{v:.3f}"
 
 
 def write_structures(structures, tanks, output: Path, coordinate_mode: str) -> None:
@@ -255,6 +266,7 @@ def write_structures(structures, tanks, output: Path, coordinate_mode: str) -> N
             "x": f"{st.anchor[0]:.3f}", "y": f"{st.anchor[1]:.3f}", "z_ground": f"{st.anchor[2]:.3f}",
             "length_m": f"{d.get('length', 0):.3f}", "width_m": f"{d.get('width', d.get('diameter', 0)):.3f}",
             "height_m": f"{(height - st.anchor[2]) if height else 0:.3f}", "axis_deg": f"{d.get('axis_deg', 0):.2f}",
+            "ground_gap_m": _gap(d.get("ground_gap_m")), "ground_gap_before_m": _gap(d.get("ground_gap_before_m")),
             "part_objects": len(names), "dims": json.dumps(rnd(d), ensure_ascii=False), "srs": st.srs,
         })
         features.append({"type": "Feature", "geometry": st.geometry,
@@ -282,7 +294,9 @@ def write_structures(structures, tanks, output: Path, coordinate_mode: str) -> N
             rows.append({"id": f"{tank.name}_stair", "kind": "wall_stair", "parent": tank.name,
                          "x": f"{pts[0][0]:.3f}", "y": f"{pts[0][1]:.3f}", "z_ground": f"{st['z_bottom']:.3f}",
                          "length_m": f"{math.radians(abs(sw)) * rm:.3f}", "width_m": f"{st['width']:.3f}",
-                         "height_m": f"{st['z_top'] - st['z_bottom']:.3f}", "axis_deg": "", "part_objects": 6,
+                         "height_m": f"{st['z_top'] - st['z_bottom']:.3f}", "axis_deg": "",
+                         "ground_gap_m": _gap(st.get("ground_gap_m")), "ground_gap_before_m": _gap(st.get("ground_gap_before_m")),
+                         "part_objects": 6,
                          "dims": json.dumps(rnd(st)), "srs": tank.srs})
             features.append({"type": "Feature", "geometry": {"type": "LineString", "coordinates": pts},
                              "properties": {"id": f"{tank.name}_stair", "kind": "wall_stair", "parent": tank.name, **rnd(st)}})
@@ -314,8 +328,20 @@ def write_structures(structures, tanks, output: Path, coordinate_mode: str) -> N
             rows.append({"id": f"{tank.name}_pedestals", "kind": "sphere_pedestals", "parent": tank.name,
                          "x": f"{tank.center_x:.3f}", "y": f"{tank.center_y:.3f}", "z_ground": f"{tank.z_base:.3f}",
                          "length_m": f"{ped['size_radial']:.3f}", "width_m": f"{ped['size_tangential']:.3f}",
-                         "height_m": f"{ped['height']:.3f}", "axis_deg": "", "part_objects": ped.get("count", 0),
+                         "height_m": f"{ped['height']:.3f}", "axis_deg": "",
+                         "ground_gap_m": _gap(0.0 if ped.get("grounds") else None),
+                         "ground_gap_before_m": _gap(ped.get("ground_gap_before_m")),
+                         "part_objects": ped.get("count", 0),
                          "dims": json.dumps(rnd(sup)), "srs": tank.srs})
+        fd = acc.get("foundation")
+        if fd:
+            rows.append({"id": f"{tank.name}_foundation", "kind": "foundation", "parent": tank.name,
+                         "x": f"{tank.center_x:.3f}", "y": f"{tank.center_y:.3f}", "z_ground": f"{fd['z0']:.3f}",
+                         "length_m": f"{2 * fd['radius']:.3f}", "width_m": f"{2 * fd['radius']:.3f}",
+                         "height_m": f"{fd['height']:.3f}", "axis_deg": "", "ground_gap_m": _gap(0.0), "ground_gap_before_m": "",
+                         "part_objects": 1, "dims": json.dumps(rnd(fd)), "srs": tank.srs})
+            features.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [tank.center_x, tank.center_y, fd["z0"]]},
+                             "properties": {"id": f"{tank.name}_foundation", "kind": "foundation", "parent": tank.name, **rnd(fd)}})
     with (output / "structures.csv").open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=_STRUCTURE_FIELDS)
         writer.writeheader()
@@ -324,3 +350,20 @@ def write_structures(structures, tanks, output: Path, coordinate_mode: str) -> N
     document = {"type": "FeatureCollection", "name": "structures",
                 "crs": {"type": "name", "properties": {"name": srs}}, "features": features}
     (output / "structures.geojson").write_text(json.dumps(document, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+_GROUND_FIELDS = ["object", "kind", "parent", "stands_on", "ground_z", "support_top_z", "bottom_before_z",
+                  "gap_to_ground_before_m", "gap_before_m",
+                  "bottom_after_z", "gap_after_m", "note"]
+
+
+def write_ground_report(rows, output: Path) -> None:
+    """ground_report.csv: every object that stands on something, its measured ground / support
+    top, and its bottom before and after snapping (absolute Z)."""
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "ground_report.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_GROUND_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: (f"{v:.3f}" if isinstance(v, float) else ("" if v is None else v)) for k, v in r.items()
+                             if k in _GROUND_FIELDS})

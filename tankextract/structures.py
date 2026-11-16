@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from tankextract import grounding as G
+
 
 @dataclass
 class Structure:
@@ -124,6 +126,12 @@ def beam(name, p0, p1, width, depth):
 def box(name, center, size, yaw_deg):
     return {"name": name, "type": "box", "center": list(map(float, center)), "size": list(map(float, size)),
             "yaw_deg": float(yaw_deg)}
+
+
+def cylinder(name, center, z0, z1, radius, segments=96):
+    """Closed vertical cylinder (foundations)."""
+    return {"name": name, "type": "cylinder", "center": [float(center[0]), float(center[1])], "z0": float(z0),
+            "z1": float(z1), "radius": float(radius), "segments": int(segments)}
 
 
 def prism(name, polygon, z0, z1):
@@ -1004,7 +1012,10 @@ def wall_stair_parts(prefix: str, tank, st: dict, rail: float = 1.0) -> list:
     for rad, tag in ((ri, "inner"), (ro, "outer")):
         pts = [(cx + rad * math.cos(a0 + sweep * j / m), cy + rad * math.sin(a0 + sweep * j / m), z0 + (z1 - z0) * j / m) for j in range(m + 1)]
         for j in range(m):
-            parts.append(beam(f"{prefix}_stair_stringer_{tag}", pts[j], pts[j + 1], 0.06, 0.22))
+            # stringer: a 0.22 m deep beam hangs below its top line, so lift the line by the
+            # depth to have its underside on the stair line and its foot on the ground
+            q0, q1 = pts[j], pts[j + 1]
+            parts.append(beam(f"{prefix}_stair_stringer_{tag}", (q0[0], q0[1], q0[2] + 0.22), (q1[0], q1[1], q1[2] + 0.22), 0.06, 0.22))
         if tag == "outer":
             up = [(x, y, z + rail) for x, y, z in pts]
             mid = [(x, y, z + rail / 2) for x, y, z in pts]
@@ -1134,7 +1145,8 @@ def _deck_side(tower: dict, conn) -> tuple[int, dict | None]:
     return k, bridge
 
 
-def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool = False) -> tuple[list[Structure], dict]:
+def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool = False,
+                      ground_rows: list | None = None) -> tuple[list[Structure], dict]:
     """All ancillary structures of a block.  Tank-attached parts go to ``tank.extra_parts`` and
     measurements to ``tank.accessories``; free-standing ones are returned as Structures."""
     stats = {"faces": int(len(F))}
@@ -1145,6 +1157,28 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool =
     axis = site_axis(F)
     stats["site_axis_deg"] = axis
     found: list[Structure] = []
+    grounding = ground_rows is not None
+    rows = ground_rows if grounding else []
+    # 0) ground contact of the tanks (foundation top or ground), before anything that uses z_base
+    if grounding:
+        for tank in tanks:
+            reach = tank.radius + 6.0
+            sub = F[(np.abs(F[:, 0] - tank.center_x) < reach) & (np.abs(F[:, 1] - tank.center_y) < reach)]
+            G.ground_tank(sub, tank, rows)
+        # connector supports / stair-tower footprints stand on the ground round them
+        for conn in connectors:
+            for j, sp in enumerate(conn.supports, start=1):
+                g, _n = G.rect_ground(F, sp["x"], sp["y"], sp.get("length", 1.0), sp.get("width", 1.0), sp.get("axis_deg", 0.0),
+                                      sp["z_bottom"])
+                before = float(sp["z_bottom"])
+                sp["z_bottom_measured"] = before
+                if g is not None:
+                    sp["z_bottom"] = g
+                    sp["ground_gap_before_m"] = before - g
+                    sp["ground_gap_m"] = 0.0
+                r = G.row(f"{conn.name}_support_{j:02d}", "support", conn.name, before, g, "ground", g, sp["z_bottom"])
+                r["_support"] = sp
+                rows.append(r)
     # 1) stair towers that carry walkways (support boxes of the connectors)
     towers = []
     for conn in connectors:
@@ -1173,6 +1207,12 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool =
         st.geometry["coordinates"][0].append(st.geometry["coordinates"][0][0])
         sp["_tower"] = st
         sp["stair_tower"] = name
+        if "ground_gap_before_m" in sp:
+            st.dims["ground_gap_before_m"] = sp["ground_gap_before_m"]
+            st.dims["ground_gap_m"] = sp["ground_gap_m"]
+            for r in rows:
+                if r.get("_support") is sp:
+                    r["kind"], r["_ref"] = "stair_tower", st
         found.append(st)
     stats["stair_towers"] = len(towers)
     # 2) tank accessories (each on the faces around its own tank)
@@ -1193,19 +1233,64 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool =
                     s["leg_diameter"] = sup["leg_diameter"]
                     s["leg_radius"] = sup["leg_diameter"] / 2
                 ped = sup.get("pedestal")
+                legs_ = s.get("legs") or []
+                zb_before = float(tank.z_base)
+                grounds = G.leg_grounds(F, tank) if grounding else [None] * len(legs_)
+                grounds = [g if g is not None else zb_before for g in grounds]
+                if grounding and legs_:
+                    tank.z_base_measured = zb_before
+                    tank.z_base = tank.z_ground = float(np.median(grounds))
+                    tank.ground_gap, tank.ground_gap_before = 0.0, zb_before - tank.z_base
                 if ped:
                     s["leg_bottom"] = ped["top"]
                     rho = float(s.get("leg_rho"))
-                    for i, a in enumerate(s.get("legs") or [], start=1):
+                    gaps = []
+                    for i, a in enumerate(legs_, start=1):
                         ar = math.radians(a)
                         px, py = tank.center_x + rho * math.cos(ar), tank.center_y + rho * math.sin(ar)
-                        parts.append(box(f"{name}_pedestal_{i:02d}", (px, py, tank.z_base + ped["height"] / 2),
-                                         (ped["size_radial"], ped["size_tangential"], ped["height"]), a))
+                        g_i = grounds[i - 1]
+                        h_i = ped["top"] - g_i
+                        parts.append(box(f"{name}_pedestal_{i:02d}", (px, py, g_i + h_i / 2),
+                                         (ped["size_radial"], ped["size_tangential"], h_i), a))
+                        gaps.append(zb_before - g_i)
+                        if grounding:
+                            rows.append(G.row(f"{name}_pedestal_{i:02d}", "sphere_pedestal", name, zb_before, g_i, "ground", g_i, g_i))
+                    ped["grounds"] = grounds
+                    ped["ground_gap_before_m"] = float(max(gaps, key=abs)) if gaps else 0.0
+                    if grounding:
+                        rows.append(G.row(f"{name}_legs", "sphere_legs", name, ped["top"], None, "pedestal top", ped["top"], ped["top"]))
+                elif grounding:
+                    s["leg_bottom"] = tank.z_base
+                    rows.append(G.row(f"{name}_legs", "sphere_legs", name, zb_before, tank.z_base, "ground", tank.z_base, tank.z_base,
+                                      "no pedestal seen"))
                 if "brace_z0" in sup:
                     s["brace_z0"], s["brace_z1"] = sup["brace_z0"], sup["brace_z1"]
                     s["bracing"] = "X (measured)"
         else:
             st = wall_stair(F, tank)
+            if st and grounding:
+                # stair foot: ground round the first metre of the helix, outside the shell / foundation
+                fd = getattr(tank, "foundation", None)
+                r_out_t = tank.radius + (fd["protrusion"] if fd else 0.0) + 0.15
+                af = math.radians(st["az_bottom_deg"])
+                rm = 0.5 * (st["inner_radius"] + st["outer_radius"])
+                fx, fy = tank.center_x + rm * math.cos(af), tank.center_y + rm * math.sin(af)
+                dd = np.hypot(F[:, 0] - fx, F[:, 1] - fy)
+                dt = np.hypot(F[:, 0] - tank.center_x, F[:, 1] - tank.center_y)
+                mm = (dd < 1.8) & (dt > r_out_t) & (F[:, 5] > 0.85) & (F[:, 2] > st["z_bottom"] - 2.0) & (F[:, 2] < st["z_bottom"] + 1.2)
+                g = G.floor_z(F[mm, 2], F[mm, 6])
+                if g is None:
+                    g = tank.z_ground
+                before = st["z_bottom"]
+                note = ""
+                if -1.0 < before - g < 1.2:
+                    st["z_bottom"] = g
+                else:
+                    note = f"stair foot {before - g:+.2f} m from the ground: left as measured (landing / platform?)"
+                st["ground_z"] = g
+                st["ground_gap_before_m"] = before - g
+                st["ground_gap_m"] = st["z_bottom"] - g
+                rows.append(G.row(f"{name}_stair", "wall_stair", name, before, g, "ground", g, st["z_bottom"], note))
             if st:
                 acc["wall_stair"] = st
                 parts += wall_stair_parts(name, tank, st, rail=tank.handrail_height or 1.0)
@@ -1226,6 +1311,10 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool =
             acc["wall_pipes"] = wp
             for i, p in enumerate(wp, start=1):
                 parts.append(rod(f"{name}_pipe_{i:02d}", (p["x"], p["y"], p["z0"]), (p["x"], p["y"], p["z1"]), p["diameter"] / 2))
+        fd = getattr(tank, "foundation", None)
+        if fd:
+            parts.insert(0, cylinder(f"{name}_foundation", (tank.center_x, tank.center_y), fd["z0"], fd["z1"], fd["radius"]))
+            acc["foundation"] = fd
         tank.accessories = acc
         tank.extra_parts = parts
     F = full

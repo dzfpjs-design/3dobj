@@ -15,8 +15,9 @@ from tankextract.discover import Block, discover_blocks
 from tankextract.model import Tank
 from tankextract.osgb_reader import OsgbError
 from tankextract.connectors import find_connectors
+from tankextract.grounding import ground_only
 from tankextract.structures import collect_faces, detect_structures, tank_boxes
-from tankextract.sidecar import write_connectors, write_sidecars, write_structures
+from tankextract.sidecar import write_connectors, write_ground_report, write_sidecars, write_structures
 from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv
 
 _LEVEL_RE = re.compile(r"_L(\d+)(?:_|\.)", re.IGNORECASE)
@@ -46,6 +47,7 @@ class RunOptions:
     sphere_bracing: bool = True
     structures: bool = True  # stair towers, roof platforms / walkways, wall stairs, sphere pedestals
     pipes: bool = False  # wall pipes, pipe runs and pipe racks (off by default)
+    grounding: bool = True  # snap bottoms to the measured ground / foundation top, model foundations
 
 
 def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
@@ -96,13 +98,21 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     for index, conn in enumerate(connectors, start=1):
         conn.name = f"Connector_{index:03d}"
     _assume_missing_rails(connectors, log)
-    if options.structures and tanks:
-        structures.extend(_detect_structures_all(tanks, connectors, log, struct_stats, pipes=options.pipes))
+    ground_rows: list = []
+    if (options.structures or options.grounding) and tanks:
+        structures.extend(_detect_structures_all(tanks, connectors, log, struct_stats, pipes=options.pipes,
+                                                 structures=options.structures,
+                                                 ground_rows=ground_rows if options.grounding else None))
     output.mkdir(parents=True, exist_ok=True)
     mode = "local" if options.local_offset else "absolute"
     write_sidecars(tanks, output, mode)
     write_connectors(connectors, output, mode)
     write_structures(structures, tanks, output, mode)
+    if options.grounding:
+        write_ground_report(ground_rows, output)
+        gaps = [abs(r["gap_before_m"]) for r in ground_rows if r.get("gap_before_m") is not None]
+        if gaps:
+            log(f"  落地检查：{len(ground_rows)} 个对象，修正前最大离地 / 入地 {max(gaps):.2f} m，中位 {sorted(gaps)[len(gaps) // 2]:.2f} m；修正后 0")
     (output / "structures_stats.json").write_text(json.dumps(struct_stats, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     (output / "connectors_debug.json").write_text(
         json.dumps(conn_debug, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
@@ -221,7 +231,8 @@ def _assume_missing_rails(connectors, log) -> None:
             log(f"  {conn.name}: 护栏在网格中不可见，按全场中位数 {median:.2f} m 补全")
 
 
-def _detect_structures_all(tanks, connectors, log, struct_stats, pipes: bool = False) -> list:
+def _detect_structures_all(tanks, connectors, log, struct_stats, pipes: bool = False, structures: bool = True,
+                           ground_rows: list | None = None) -> list:
     out = []
     groups: dict[int, list] = {}
     for tank in tanks:
@@ -230,7 +241,12 @@ def _detect_structures_all(tanks, connectors, log, struct_stats, pipes: bool = F
             groups.setdefault(id(faces), [faces, []])[1].append(tank)
     for faces, group in groups.values():
         links = [c for c in connectors if c.tank_refs and c.tank_refs[0] in group]
-        found, sstats = detect_structures(group, links, faces, log, pipes=pipes)
+        if structures:
+            found, sstats = detect_structures(group, links, faces, log, pipes=pipes, ground_rows=ground_rows)
+        else:
+            found, sstats = [], {"faces": int(len(faces))}
+            if ground_rows is not None:
+                ground_only(group, links, faces, ground_rows)
         block = group[0].block
         for st in found:
             st.block, st.srs, st.origin = block, group[0].srs, tuple(group[0].origin)
@@ -253,6 +269,11 @@ def _detect_structures_all(tanks, connectors, log, struct_stats, pipes: bool = F
             if tower is not None:
                 sp["stair_tower"] = tower.name
                 del sp["_tower"]
+    for r in ground_rows or []:
+        ref = r.pop("_ref", None)
+        r.pop("_support", None)
+        if ref is not None:
+            r["object"] = ref.name
     return out
 
 
@@ -380,12 +401,17 @@ def _local_part(part: dict, origin) -> dict:
     out = dict(part)
     for key in ("p0", "p1", "center"):
         if key in out:
-            x, y, z = out[key]
-            out[key] = [x - ox, y - oy, z - oz]
+            if len(out[key]) == 3:
+                x, y, z = out[key]
+                out[key] = [x - ox, y - oy, z - oz]
+            else:  # plan-only centre (cylinder): heights are in z0 / z1
+                x, y = out[key]
+                out[key] = [x - ox, y - oy]
     if "polygon" in out:
         out["polygon"] = [[x - ox, y - oy] for x, y in out["polygon"]]
-        out["z0"] = out["z0"] - oz
-        out["z1"] = out["z1"] - oz
+    for key in ("z0", "z1"):
+        if key in out:
+            out[key] = out[key] - oz
     return out
 
 

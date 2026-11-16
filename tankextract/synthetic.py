@@ -18,6 +18,7 @@ from tankextract.osgb_writer import write_geode_osgb, write_pagedlod_osgb
 ORIGIN = (629024.0, 3586203.0, 0.0)
 SRS = "EPSG:4548"
 TILE_BOUNDARY = 40.0
+TERRAIN_Z = 7.5  # flat and cone tanks stand on 0.5 m concrete foundations, the dome on the terrain
 
 # Local metres. Absolute X/Y = ORIGIN + local.
 EXPECTED = [
@@ -324,7 +325,7 @@ def _terrain(step: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
     verts = []
     for y in ys:
         for x in xs:
-            verts.append((x, y, 7.5 + float(rng.normal(0, 0.015))))
+            verts.append((x, y, TERRAIN_Z + float(rng.normal(0, 0.015))))
     verts = np.asarray(verts, dtype=np.float64)
     nx, ny = len(xs), len(ys)
     tris = []
@@ -334,8 +335,8 @@ def _terrain(step: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
             b = a + 1
             c = a + nx
             d = c + 1
-            tris.append((a, c, b))
-            tris.append((b, c, d))
+            tris.append((a, b, c))  # counter-clockwise from above: the ground faces up
+            tris.append((b, d, c))
     return verts, np.asarray(tris, dtype=np.int64)
 
 
@@ -349,6 +350,9 @@ def _tank_flat() -> tuple[np.ndarray, np.ndarray]:
         _annulus(spec["x"], spec["y"], z1, r - 0.02, r + 0.24),
         _band(spec["x"], spec["y"], z0 + 0.55 * spec["wall_h"], 0.16, r, r + 0.30),
         _band(spec["x"], spec["y"], z0, 0.22, r, r + 0.32),
+        # concrete foundation from the terrain (7.5) up to the shell base, 0.3 m wider
+        _cylinder(spec["x"], spec["y"], TERRAIN_Z, z0, r + 0.3),
+        _annulus(spec["x"], spec["y"], z0, r, r + 0.3),
         _stair(spec["x"], spec["y"], z0, spec["wall_h"], r + 0.45, r + 1.15),
     ]
     v, t = _concat(parts)
@@ -361,6 +365,8 @@ def _tank_cone() -> tuple[np.ndarray, np.ndarray]:
     parts = [
         _cylinder(spec["x"], spec["y"], z0, z1, spec["r"]),
         _cone(spec["x"], spec["y"], z1, spec["r"], spec["rise"]),
+        _cylinder(spec["x"], spec["y"], TERRAIN_Z, z0, spec["r"] + 0.3),
+        _annulus(spec["x"], spec["y"], z0, spec["r"], spec["r"] + 0.3),
     ]
     v, t = _concat(parts)
     return _jitter(v, 0.006, seed=12), t

@@ -1267,7 +1267,10 @@ def _base_ring(outer_pts, center, radius, z_base) -> dict | None:
     if len(outer_pts) < 30:
         return None
     rho = np.hypot(outer_pts[:, 0] - center[0], outer_pts[:, 1] - center[1])
-    mask = (np.abs(outer_pts[:, 2] - z_base) < 0.45) & (rho > radius + 0.04) & (rho < radius + 0.8)
+    # A base ring is a band on the shell, above its base: points level with or below the base
+    # belong to a concrete foundation, which grounding models separately.
+    dz = outer_pts[:, 2] - z_base
+    mask = (dz > 0.04) & (dz < 0.45) & (rho > radius + 0.04) & (rho < radius + 0.8)
     if mask.sum() < 25:
         return None
     if _angular_coverage(outer_pts[mask, :2], center) < 280:

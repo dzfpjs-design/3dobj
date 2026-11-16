@@ -86,6 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--pipes", action="store_true",
         help="同时建管道：罐壁立管、单独管线、管廊（默认不建，管道另行用激光扫描数据建模）",
     )
+    parser.add_argument(
+        "--no-grounding", action="store_true",
+        help="不做落地校正（默认把罐底、基础墩、楼梯塔、盘梯脚贴到实测地面或基础顶面，并建混凝土基础）",
+    )
     parser.add_argument("--limit-tiles", type=int, default=None, help="每个块最多读取的最细瓦片数（调试用）")
     parser.add_argument("--self-test", action="store_true", help="生成合成场景并跑通全流程，用于没有真实数据时的自检")
     parser.add_argument("--version", action="version", version=f"tankextract {__version__}")
@@ -136,6 +140,7 @@ def _options_from_args(args) -> RunOptions:
         sphere_bracing=not args.no_sphere_bracing,
         structures=not args.no_structures,
         pipes=args.pipes,
+        grounding=not args.no_grounding,
     )
 
 

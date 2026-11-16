@@ -12,12 +12,13 @@ import bmesh
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 src, out = argv[0], argv[1]
+ALL = "--all" in argv[2:]  # every mesh object, not only the tank bodies
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.fbx(filepath=src)
 bpy.context.view_layer.update()
 rows = []
 for obj in sorted(bpy.data.objects, key=lambda o: o.name):
-    if obj.type != "MESH" or not obj.name.endswith("_body"):
+    if obj.type != "MESH" or not (ALL or obj.name.endswith("_body")):
         continue
     bm = bmesh.new()
     bm.from_mesh(obj.data)
@@ -44,7 +45,7 @@ for obj in sorted(bpy.data.objects, key=lambda o: o.name):
             for e in g.edges:
                 stack.extend(h for h in e.link_faces if h.index not in seen)
     rows.append({
-        "id": obj.name[: -len("_body")], "object": obj.name, "parent": obj.parent.name if obj.parent else "",
+        "id": obj.name[: -len("_body")] if obj.name.endswith("_body") else obj.name, "object": obj.name, "parent": obj.parent.name if obj.parent else "",
         "faces": len(bm.faces), "shells": shells, "boundary_edges": boundary,
         "nonmanifold_edges": nonman_e, "nonmanifold_verts": nonman_v,
         "manifold": nonman_e == 0 and nonman_v == 0, "closed": boundary == 0,

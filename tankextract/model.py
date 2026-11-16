@@ -107,7 +107,15 @@ def _accessory_columns(tank: "Tank") -> dict:
     pf = roof.get("platform") or {}
     st = acc.get("wall_stair") or {}
     pipes = acc.get("wall_pipes") or []
+    fd = getattr(tank, "foundation", None) or {}
     return {
+        "Z_base_measured": _fmt(getattr(tank, "z_base_measured", None)),
+        "ground_gap_m": _fmt(getattr(tank, "ground_gap", None)),
+        "ground_gap_before_m": _fmt(getattr(tank, "ground_gap_before", None)),
+        "foundation": bool(fd),
+        "foundation_top_z": _fmt(fd.get("z1")),
+        "foundation_height_m": _fmt(fd.get("height")),
+        "foundation_radius_m": _fmt(fd.get("radius")),
         "sphere_leg_diameter_v5_m": _fmt((tank.sphere or {}).get("leg_diameter_v5")) if tank.sphere else "",
         "sphere_pedestal_height_m": _fmt(ped.get("height")),
         "sphere_pedestal_size_m": f"{ped['size_radial']:.2f}x{ped['size_tangential']:.2f}" if ped else "",
