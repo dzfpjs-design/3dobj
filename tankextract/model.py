@@ -74,4 +74,15 @@ class Tank:
             "handrail_height_m": self.handrail_height if self.handrail_height is not None else "",
             "sphere_center_z": (self.sphere or {}).get("center_z", ""),
             "sphere_leg_count": len((self.sphere or {}).get("legs", [])) if self.sphere else "",
+            "sphere_leg_diameter_m": (self.sphere or {}).get("leg_diameter", "") if self.sphere else "",
+            "sphere_leg_rho_m": (self.sphere or {}).get("leg_rho", "") if self.sphere else "",
+            "sphere_leg_height_m": (
+                self.sphere["leg_top"] - self.sphere["leg_bottom"]
+                if self.sphere and "leg_top" in self.sphere and "leg_bottom" in self.sphere
+                else ""
+            ),
+            "sphere_leg_azimuth_deg": (
+                ";".join(f"{a:.1f}" for a in self.sphere.get("legs", [])) if self.sphere else ""
+            ),
+            "sphere_bracing": (self.sphere or {}).get("bracing", "") if self.sphere else "",
         }

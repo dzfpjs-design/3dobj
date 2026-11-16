@@ -76,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--merge", action="store_true", help="额外输出合并后的 tanks_all.fbx")
     parser.add_argument("--no-merge", action="store_true", help="不输出合并 FBX（默认会输出）")
     parser.add_argument("--no-blender", action="store_true", help="只检测并写侧车文件，不调用 Blender")
+    parser.add_argument("--no-connectors", action="store_true", help="不检测罐顶之间的走道/管道")
+    parser.add_argument("--no-sphere-bracing", action="store_true", help="球罐支腿之间不加 X 形拉杆")
     parser.add_argument("--limit-tiles", type=int, default=None, help="每个块最多读取的最细瓦片数（调试用）")
     parser.add_argument("--self-test", action="store_true", help="生成合成场景并跑通全流程，用于没有真实数据时的自检")
     parser.add_argument("--version", action="version", version=f"tankextract {__version__}")
@@ -117,6 +119,8 @@ def _options_from_args(args) -> RunOptions:
         segments=args.segments,
         no_blender=args.no_blender,
         limit_tiles=args.limit_tiles,
+        connectors=not args.no_connectors,
+        sphere_bracing=not args.no_sphere_bracing,
     )
 
 

@@ -125,8 +125,23 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 
 ## 输出
 
-- `Tank_001.fbx`、`Tank_002.fbx`…：白模，单位米，Z 轴向上，无贴图。对象名如 `Tank_001_Wall`、`_Roof`、`_Rim`、`_Girder_01`、`_BaseRing`、`_Stair`。
-- `tanks_all.fbx`：全部罐子合在一个文件里。
+- `Tank_001.fbx`、`Tank_002.fbx`…：白模，单位米，Z 轴向上，无贴图。每个罐是一个父级空物体 `Tank_001`（放在罐底圆心，真实坐标），罐体和每个附属结构都是它下面独立的网格对象，可以单独选中、移动、删除或修改：
+
+  | 对象名 | 内容 |
+  |---|---|
+  | `Tank_001` | 父级空物体（Empty），位置 = 罐底中心 |
+  | `Tank_001_body` | 罐体：筒壁 + 罐顶（平顶 / 锥顶 / 拱顶）；球罐为整个球壳 |
+  | `Tank_001_handrail` | 罐顶周边护栏 |
+  | `Tank_001_top_rim` | 顶圈 |
+  | `Tank_001_wind_girder_01`… | 抗风圈 |
+  | `Tank_001_base_ring` | 底圈 |
+  | `Tank_001_stair` | 螺旋梯 |
+  | `Tank_001_leg_01`… | 球罐支腿（每根一个对象） |
+  | `Tank_001_brace_01a` / `_01b`… | 球罐支腿间 X 形拉杆（每根一个对象） |
+
+- `tanks_all.fbx`：全部罐子（同样的层级）加全部罐间连接，合在一个文件里。
+- `connectors.fbx`：只含罐间连接。每处连接一个父级空物体 `Connector_001`（放在走道起点），下面是 `Connector_001_deck`（走道板）、`_rail_L_top` / `_rail_L_mid` / `_rail_R_top` / `_rail_R_mid`（两侧扶手和中横杆）、`_post_L_01`…（护栏立柱）、`_support_01`…（落地支撑 / 楼梯塔）；无护栏的窄连接按管道建为 `_pipe`。
+- `connectors.csv`、`connectors.geojson`：每处连接两端的绝对坐标和高程、长度、坡度、宽、板厚、护栏高、落地支撑（位置、平面尺寸、底 / 顶高程）。GeoJSON 里连接是三维 LineString，支撑是 Point。`connectors_debug.json` 记录每对相邻罐为什么有 / 没有连接。
 - `tanks.geojson`、`tanks.csv`：每个罐的绝对坐标和尺寸。CSV 带 UTF-8 BOM，方便用 Excel 打开。
 - `tanks.prj`：SRS 为 `EPSG:4534`–`EPSG:4554`（CGCS2000 三度带）时写 WKT，例如 EPSG:4548 为中央子午线 117°E。其它 SRS 原样写入。
 - `srs_origin.json`、`tanks_spec.json`：原点、坐标系，以及交给 Blender 的参数。
@@ -135,7 +150,7 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 
 FBX 自定义属性（字符串，避免再被截成单精度）：`epsg`、`srs_origin_x/y/z`、`coordinate_mode`、`radius_m`、`wall_height_m`、`roof_type`、`rms_m`。
 
-CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_height_m、total_height_m、roof_type（`flat` 平顶 / `cone` 锥顶 / `dome` 球冠拱顶 / `sphere` 球罐）、roof_rise_m、rms_m、coverage_deg，以及顶圈、抗风圈、底圈、螺旋梯（能稳定看出来时），handrail_height_m（护栏高）、sphere_center_z、sphere_leg_count（球罐）。
+CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_height_m、total_height_m、roof_type（`flat` 平顶 / `cone` 锥顶 / `dome` 球冠拱顶 / `sphere` 球罐）、roof_rise_m、rms_m、coverage_deg，以及顶圈、抗风圈、底圈、螺旋梯（能稳定看出来时），handrail_height_m（护栏高）、sphere_center_z、sphere_leg_count、sphere_leg_diameter_m、sphere_leg_rho_m（支腿中心到球心的水平距离）、sphere_leg_height_m、sphere_leg_azimuth_deg（各支腿方位角，正东起逆时针）、sphere_bracing（球罐）。
 
 ## 检测在做什么
 
@@ -145,6 +160,9 @@ CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_he
 4. 第二遍只重读和候选罐相交的瓦片，在筒壁半径附近收紧拟合，得到圆心、半径、壁高、总高和 RMS。然后剔除：罐底高出周围地面 3 m 以上的（楼顶风机筒等），壁高超过 4 倍直径的（烟囱、塔器），圆柱内部中段有大量网格的（工艺装置里的假圆，真罐是封闭壳体），以及筒壁在高度方向不连续的。地面高程取罐外一圈地面的低值，不再误取罐顶。
 5. 罐顶：对朝上的屋面按半径分环取低分位高程（栏杆、走道、中心平台只占每一环的一小部分，不会抬高这条下包络），分别拟合平顶、锥顶（线性）和球冠穹顶（拱顶，按实测矢高求球半径），取残差最小者。小罐（半径 < 4 m）矢高小于 max(0.2 m, 0.12×半径)（约缓于 1:8）按平顶处理，顶上的平台、呼吸阀不再被当成锥顶。罐壁顶部常有一圈约 1.1 m 的护栏，筒壁顶取罐壁内侧最低一环屋面（大罐护栏内侧的环形走道）的实测高程，护栏高度单独记为 `handrail_height_m` 并在白模里做成一圈薄带。
 6. 球罐：若筒壁以上的表面大部分落在以筒壁半径为半径的球面上、并接近球顶，判为球罐（`roof_type=sphere`），输出球心高程、球半径和支柱（按支柱处竖直面的方位直方图计数），白模为球体加支柱。顶圈要伸出筒壁才记录；抗风圈是筒壁外侧、沿圆周一圈的窄环；底圈在底部；螺旋梯是筒外一条随高度转动的窄带。
+
+7. 罐间连接：对每一对相邻（罐壁间距 ≤ 30 m、中间没有别的罐）的罐，在两罐圆心连线两侧 ±3 m 的走廊里、罐顶高度附近找连续的朝上面：要覆盖两罐之间至少 75% 的长度。走道板高程用“覆盖站点最多的直线”求（允许坡度，能分开走道板和它上面的管子、下面的楼梯平台），再沿轴线向罐顶延伸到走道板落到罐顶面上为止（球罐的走道一直通到顶部平台）。走道两端都不能比各自罐檐低 0.5 m 以上（只认罐顶到罐顶），罐之间更低处的管廊、侧平台不算。宽度取走道板面的横向范围，板厚取板面到板底朝下面的距离，护栏取两侧边缘 0.3–1.6 m 高的面，落地支撑 / 楼梯塔取走道下方从地面一直连到板底的竖直面。窄而无护栏的按管道（直径 = 宽度）输出。
+8. 球罐支腿：按方位直方图找峰，再按等间距校正（支腿总是均布的）；每根支腿在离地 1–4 m 处拟合圆得到直径和位置，支腿从地面到球心高程（赤道）。照片模型里拉杆太细，量不出来；默认在相邻支腿之间加 X 形拉杆（Ø0.1 m，从离地 0.8 m 到支腿与球壳相交处下 0.5 m），`--no-sphere-bracing` 可关掉。
 
 合成场景上半径和高程的误差大约是几毫米到两厘米，RMS 约 6–18 mm。详见 `validation_report.md`。
 
@@ -160,6 +178,8 @@ CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_he
 - 内置解析器不覆盖 OSG 的全部类。没有 binary bracket 的文件若出现未实现的类，该瓦片会失败并尝试 osgconv。inline schema（attribute bit 0x2）直接拒绝。
 - 一个 zip 视为一个块、一个原点。跨两个块的罐不会被拼成一个。
 - 球罐按上半球拟合；下半球常被照片模型糊成竖直“裙边”，不参与球半径拟合。半径小于 2 m 的立式小容器默认不收（`--min-radius 1.5` 可放开，但会混进立管、阀门井等）。
+- 罐间连接只找“罐顶到罐顶”的走道 / 管道。地面管廊、罐到楼梯塔或建筑的走道、沿罐壁下行的管线不建模。球罐顶部的圆形平台、楼梯塔内部的梯段不细分，楼梯塔按实测平面尺寸做成实心方柱。
+- 球罐支腿直径从照片模型量，网格会把细柱子“吹胖”，可能偏大约 0.1 m；支腿下的混凝土墩不建模。
 - 带高穹顶、外有平台管线的罐，照片模型的筒壁本身有 ±0.2 m 的起伏，半径和壁高的不确定度相应变大。
 
 ## 测试

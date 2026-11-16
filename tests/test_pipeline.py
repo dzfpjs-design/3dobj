@@ -60,6 +60,9 @@ def test_folder_and_zip_recover_known_tanks(tmp_path):
             assert len(tank.wind_girders) == spec["girders"]
             assert bool(tank.base_ring) is spec["base_ring"]
             assert (tank.top_rim_width is not None) is spec["rim"]
+        # Synthetic tanks are not linked: connector files exist and are empty.
+        assert (out / "connectors.csv").read_text(encoding="utf-8-sig").startswith("id,kind,tank_a")
+        assert json.loads((out / "connectors.geojson").read_text(encoding="utf-8"))["features"] == []
         geo = json.loads((out / "tanks.geojson").read_text(encoding="utf-8"))
         assert geo["crs"]["properties"]["name"] == "EPSG:4548"
         assert "4548" in (out / "tanks.prj").read_text(encoding="utf-8")
@@ -124,20 +127,71 @@ def test_blender_sphere_and_handrail(tmp_path):
     base = spec["tanks"][0]
     sphere = dict(base, id="Tank_S", roof_type="sphere", wall_height=0.0, roof_rise=0.0, handrail_height=None)
     sphere["sphere"] = {"center_z": base["z_base"] + 9.0, "radius": 6.0, "legs": [0, 90, 180, 270],
-                        "leg_rho": 5.8, "leg_radius": 0.3, "leg_bottom": base["z_base"]}
+                        "leg_rho": 5.8, "leg_radius": 0.3, "leg_bottom": base["z_base"],
+                        "leg_contact_z": base["z_base"] + 7.5, "bracing": "X"}
     railed = dict(base, id="Tank_H", roof_type="dome", roof_rise=1.5, handrail_height=1.1, sphere=None)
     spec["tanks"] = [sphere, railed]
+    x, y = base["center_local"]
+    z = base["z_base"] + 12.0
+    spec["connectors"] = [{
+        "id": "Connector_T", "kind": "walkway", "tank_a": "Tank_S", "tank_b": "Tank_H", "origin": base["origin"],
+        "start_local": [x, y, z], "end_local": [x + 4.0, y, z + 0.5], "width": 1.0, "depth": 0.25,
+        "handrail_height": 1.1, "epsg": base["epsg"],
+        "supports": [{"x": x + 2.0, "y": y, "z_bottom": base["z_base"], "z_top": z - 0.25,
+                      "length": 0.4, "width": 0.4, "axis_deg": 0.0}],
+    }]
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     script = Path(__file__).resolve().parents[1] / "tankextract" / "blender" / "export_tanks.py"
     fbx = tmp_path / "fbx"
     fbx.mkdir()
     subprocess.run([blender, "-b", "--python-exit-code", "1", "-P", str(script), "--", "--spec", str(spec_path),
-                    "--output", str(fbx)], check=True, capture_output=True)
+                    "--output", str(fbx), "--merge"], check=True, capture_output=True)
     report = json.loads((fbx / "blender_report.json").read_text(encoding="utf-8"))
     objects = {item["path"].rsplit("/", 1)[-1]: item["objects"] for item in report["files"]}
-    assert "Tank_S_Sphere" in objects["Tank_S.fbx"]
-    assert sum(name.startswith("Tank_S_Leg_") for name in objects["Tank_S.fbx"]) == 4
-    assert "Tank_H_Handrail" in objects["Tank_H.fbx"]
+    # Body and every structure part are separate objects under one parent empty.
+    s_objs, h_objs = objects["Tank_S.fbx"], objects["Tank_H.fbx"]
+    assert s_objs[0] == "Tank_S" and h_objs[0] == "Tank_H"
+    assert "Tank_S_body" in s_objs and "Tank_H_body" in h_objs
+    assert [n for n in s_objs if n.startswith("Tank_S_leg_")] == [f"Tank_S_leg_{k:02d}" for k in range(1, 5)]
+    assert sum(name.startswith("Tank_S_brace_") for name in s_objs) == 8
+    assert "Tank_H_handrail" in h_objs
+    assert not any(n.endswith(("_Wall", "_Roof", "_Sphere")) for n in s_objs + h_objs)
+    conn = report["connector_objects"]
+    assert conn[0] == "Connector_T"
+    assert "Connector_T_deck" in conn and "Connector_T_support_01" in conn
+    assert "Connector_T_rail_L_top" in conn and "Connector_T_post_R_01" in conn
+    assert Path(report["connectors_file"]).read_bytes().startswith(b"Kaydara FBX Binary")
+    # Read the merged FBX back: hierarchy and real positions survive the file.
+    dump = tmp_path / "dump.json"
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import bpy, json, sys\n"
+        "bpy.ops.wm.read_factory_settings(use_empty=True)\n"
+        f"bpy.ops.import_scene.fbx(filepath={str(report['merged'])!r})\n"
+        "bpy.context.view_layer.update()\n"
+        "out = {}\n"
+        "for o in bpy.data.objects:\n"
+        "    v = (o.matrix_world @ o.data.vertices[0].co) if o.type == 'MESH' else o.matrix_world.translation\n"
+        "    out[o.name] = {'type': o.type, 'parent': o.parent.name if o.parent else None, 'v': list(v)}\n"
+        f"open({str(dump)!r}, 'w').write(json.dumps(out))\n",
+        encoding="utf-8",
+    )
+    subprocess.run([blender, "-b", "--python-exit-code", "1", "-P", str(probe)], check=True, capture_output=True)
+    scene = json.loads(dump.read_text(encoding="utf-8"))
+    for group in ("Tank_S", "Tank_H", "Connector_T"):
+        assert scene[group]["type"] == "EMPTY" and scene[group]["parent"] is None
+    for name, rec in scene.items():
+        if rec["type"] == "MESH":
+            assert rec["parent"] is not None and name.startswith(rec["parent"] + "_"), name
+    assert scene["Tank_S_body"]["parent"] == "Tank_S"
+    assert scene["Tank_H_handrail"]["parent"] == "Tank_H"
+    assert scene["Connector_T_deck"]["parent"] == "Connector_T"
+    # World coordinates are the tile-local metres from the spec.
+    assert abs(scene["Tank_S"]["v"][0] - x) < 0.01 and abs(scene["Tank_S"]["v"][1] - y) < 0.01
+    deck_z = [rec["v"][2] for n, rec in scene.items() if n == "Connector_T_deck"][0]
+    assert z - 0.3 < deck_z < z + 0.6
+    leg = scene["Tank_S_leg_01"]["v"]
+    assert abs(((leg[0] - x) ** 2 + (leg[1] - y) ** 2) ** 0.5 - 5.8) < 0.4
     for item in report["files"]:
         assert item["reimport_vertex"] is not None

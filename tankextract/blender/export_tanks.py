@@ -52,6 +52,17 @@ def main() -> None:
                 "origin": tank["origin"],
             }
         )
+    links = spec.get("connectors") or []
+    if links:
+        _reset_scene()
+        material = _white_material()
+        objects = []
+        for conn in links:
+            objects.extend(_build_connector(conn, mode, material))
+        path = output / "connectors.fbx"
+        _export(path, objects)
+        report["connectors_file"] = str(path)
+        report["connector_objects"] = [obj.name for obj in objects]
     if merge and all_objects:
         # Rebuild so per-tank exports (which reimport) cannot disturb the merge.
         _reset_scene()
@@ -59,6 +70,8 @@ def main() -> None:
         merged = []
         for tank in spec["tanks"]:
             merged.extend(_build_tank(tank, segments, mode, material))
+        for conn in links:
+            merged.extend(_build_connector(conn, mode, material))
         path = output / "tanks_all.fbx"
         _export(path, merged)
         report["merged"] = str(path)
@@ -119,35 +132,50 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
     if sphere:
         zc = float(sphere["center_z"])
         rs = float(sphere["radius"])
-        pieces.append((f"{tank['id']}_Sphere", *_uv_sphere(cx, cy, zc, rs, segments, max(12, segments // 2))))
+        pieces.append(("body", *_uv_sphere(cx, cy, zc, rs, segments, max(12, segments // 2))))
         leg_r = float(sphere.get("leg_radius") or 0.3)
         leg_rho = float(sphere.get("leg_rho") or rs * 0.97)
         bottom = float(sphere.get("leg_bottom", z0))
         for index, azimuth in enumerate(sphere.get("legs") or [], start=1):
             a = math.radians(float(azimuth))
             lx, ly = cx + leg_rho * math.cos(a), cy + leg_rho * math.sin(a)
-            pieces.append((f"{tank['id']}_Leg_{index:02d}", *_cylinder(lx, ly, bottom, zc, leg_r, 12, caps=True)))
-        return _finish(pieces, tank, mode, material)
-    pieces.append((f"{tank['id']}_Wall", *_cylinder(cx, cy, z0, z1, radius, segments)))
+            pieces.append((f"leg_{index:02d}", *_cylinder(lx, ly, bottom, zc, leg_r, 12, caps=True)))
+        legs = [float(a) for a in sphere.get("legs") or []]
+        if sphere.get("bracing") and len(legs) >= 3:
+            # X bracing between neighbouring legs, from just above the base to
+            # just under where the legs meet the shell.
+            lo = bottom + 0.8
+            hi = float(sphere.get("leg_contact_z", zc - 0.25 * rs)) - 0.5
+            if hi > lo + 1.0:
+                pts = [
+                    (cx + leg_rho * math.cos(math.radians(a)), cy + leg_rho * math.sin(math.radians(a)))
+                    for a in legs
+                ]
+                for index in range(len(pts)):
+                    (x0, y0), (x1, y1) = pts[index], pts[(index + 1) % len(pts)]
+                    pieces.append((f"brace_{index + 1:02d}a", *_rod((x0, y0, lo), (x1, y1, hi), 0.05, 8)))
+                    pieces.append((f"brace_{index + 1:02d}b", *_rod((x0, y0, hi), (x1, y1, lo), 0.05, 8)))
+        return _finish(pieces, tank, mode, material, tank["id"], (cx, cy, z0))
+    pieces.append(("body", *_cylinder(cx, cy, z0, z1, radius, segments)))
     handrail = tank.get("handrail_height")
     if handrail:
         # Lifted 2 cm off the wall top so its bottom does not z-fight with
         # the roof edge and rim annulus.
         pieces.append(
-            (f"{tank['id']}_Handrail", *_band(cx, cy, z1 + 0.02, float(handrail) - 0.02, radius - 0.06, radius, segments))
+            ("handrail", *_band(cx, cy, z1 + 0.02, float(handrail) - 0.02, radius - 0.06, radius, segments))
         )
     roof = tank.get("roof_type", "flat")
     rise = float(tank.get("roof_rise") or 0.0)
     if roof == "cone" and rise > 0:
-        pieces.append((f"{tank['id']}_Roof", *_cone(cx, cy, z1, radius, rise, segments)))
+        pieces.append(("body", *_cone(cx, cy, z1, radius, rise, segments)))
     elif roof == "dome" and rise > 0:
-        pieces.append((f"{tank['id']}_Roof", *_dome(cx, cy, z1, radius, rise, segments)))
+        pieces.append(("body", *_dome(cx, cy, z1, radius, rise, segments)))
     else:
-        pieces.append((f"{tank['id']}_Roof", *_disk(cx, cy, z1, radius * 0.998, segments)))
+        pieces.append(("body", *_disk(cx, cy, z1, radius * 0.998, segments)))
     rim = tank.get("top_rim_width")
     if rim:
         pieces.append(
-            (f"{tank['id']}_Rim", *_annulus(cx, cy, z1, max(radius - 0.05, 0.01), radius + float(rim) * 0.5, segments))
+            ("top_rim", *_annulus(cx, cy, z1, max(radius - 0.05, 0.01), radius + float(rim) * 0.5, segments))
         )
     for index, girder in enumerate(tank.get("wind_girders") or [], start=1):
         gz = float(girder["z"])
@@ -155,7 +183,7 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
         height = float(girder.get("height") or 0.15)
         pieces.append(
             (
-                f"{tank['id']}_Girder_{index:02d}",
+                f"wind_girder_{index:02d}",
                 *_band(cx, cy, gz - height / 2, height, radius, radius + prot, segments),
             )
         )
@@ -163,7 +191,7 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
     if ring:
         prot = float(ring["protrusion"])
         height = float(ring.get("height") or 0.22)
-        pieces.append((f"{tank['id']}_BaseRing", *_band(cx, cy, z0, height, radius, radius + prot, segments)))
+        pieces.append(("base_ring", *_band(cx, cy, z0, height, radius, radius + prot, segments)))
     stair = tank.get("spiral_stair")
     if stair:
         outer = float(stair["outer_radius"])
@@ -171,22 +199,161 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
         turns = float(stair["turns"])
         pieces.append(
             (
-                f"{tank['id']}_Stair",
+                "stair",
                 *_stair(cx, cy, z0, float(tank["wall_height"]), max(outer - width, radius + 0.05), outer, turns, segments // 2),
             )
         )
-    return _finish(pieces, tank, mode, material)
+    return _finish(pieces, tank, mode, material, tank["id"], (cx, cy, z0))
 
 
-def _finish(pieces, tank: dict, mode: str, material) -> list:
+def _finish(pieces, tank: dict, mode: str, material, group: str, anchor) -> list:
+    """One parent empty per tank / connector, one mesh object per part.
+
+    Pieces with the same part name (wall + roof -> ``body``) are merged. The
+    empty sits at ``anchor`` (tank centre at its base, in real coordinates);
+    child vertices are stored relative to it, so world positions stay real
+    and each part can be moved or edited on its own.
+    """
     origin = tank["origin"]
-    objects = []
+    merged: dict[str, tuple[list, list]] = {}
     for name, verts, faces in pieces:
+        verts_acc, faces_acc = merged.setdefault(name, ([], []))
+        base = len(verts_acc)
+        verts_acc.extend(verts)
+        faces_acc.extend(tuple(i + base for i in face) for face in faces)
+    ax, ay, az = _place([tuple(anchor)], origin, mode)[0]
+    empty = bpy.data.objects.new(group, None)
+    empty.empty_display_type = "PLAIN_AXES"
+    empty.location = (ax, ay, az)
+    bpy.context.scene.collection.objects.link(empty)
+    _stamp(empty, tank, mode)
+    empty["part"] = "group"
+    objects = [empty]
+    for name, (verts, faces) in merged.items():
         placed = _place(verts, origin, mode)
-        obj = _object(name, placed, faces, material)
+        rel = [(x - ax, y - ay, z - az) for x, y, z in placed]
+        obj = _object(f"{group}_{name}", rel, faces, material)
+        obj.parent = empty
         _stamp(obj, tank, mode)
+        obj["part"] = name
         objects.append(obj)
     return objects
+
+
+def _build_connector(conn: dict, mode: str, material) -> list:
+    """Walkway deck (box), handrails (top + mid rail, posts) and supports; or a pipe."""
+    cid = conn["id"]
+    p0 = [float(v) for v in conn["start_local"]]
+    p1 = [float(v) for v in conn["end_local"]]
+    width = float(conn["width"])
+    depth = float(conn.get("depth") or 0.2)
+    pieces = []
+    if conn.get("kind") == "pipe":
+        r = width / 2.0
+        pieces.append(("pipe", *_rod((p0[0], p0[1], p0[2] - r), (p1[0], p1[1], p1[2] - r), r, 16)))
+    else:
+        pieces.append(("deck", *_beam(p0, p1, width, depth)))
+        rail = conn.get("handrail_height")
+        if rail:
+            rail = float(rail)
+            dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+            run = math.hypot(dx, dy) or 1.0
+            nx, ny = -dy / run, dx / run
+            off = width / 2.0 - 0.03
+            posts = max(2, int(run / 1.5) + 1)
+            for side, sign in (("L", 1.0), ("R", -1.0)):
+                ox, oy = nx * off * sign, ny * off * sign
+                for level, tag in ((rail, "top"), (rail * 0.5, "mid")):
+                    a = (p0[0] + ox, p0[1] + oy, p0[2] + level)
+                    b = (p1[0] + ox, p1[1] + oy, p1[2] + level)
+                    pieces.append((f"rail_{side}_{tag}", *_rod(a, b, 0.025, 8)))
+                for k in range(posts):
+                    f = k / (posts - 1)
+                    x = p0[0] + dx * f + ox
+                    y = p0[1] + dy * f + oy
+                    z = p0[2] + (p1[2] - p0[2]) * f
+                    pieces.append((f"post_{side}_{k + 1:02d}", *_rod((x, y, z), (x, y, z + rail), 0.025, 6)))
+    for index, sp in enumerate(conn.get("supports") or [], start=1):
+        pieces.append((
+            f"support_{index:02d}",
+            *_vbox(float(sp["x"]), float(sp["y"]), float(sp["z_bottom"]), float(sp["z_top"]),
+                   float(sp.get("length", 0.4)), float(sp.get("width", 0.4)), float(sp.get("axis_deg", 0.0))),
+        ))
+    meta = {
+        "id": cid, "origin": conn["origin"], "epsg": conn.get("epsg", ""), "radius": 0.0,
+        "wall_height": 0.0, "total_height": 0.0, "roof_type": conn.get("kind", ""), "rms_m": 0.0,
+    }
+    objects = _finish(pieces, meta, mode, material, cid, p0)
+    for obj in objects:
+        obj["connector_id"] = cid
+        obj["tank_a"] = conn.get("tank_a", "")
+        obj["tank_b"] = conn.get("tank_b", "")
+    return objects
+
+
+def _frame(p0, p1):
+    """Unit axis along p0->p1 plus two perpendicular unit vectors."""
+    ax = [p1[i] - p0[i] for i in range(3)]
+    length = math.sqrt(sum(c * c for c in ax)) or 1.0
+    ax = [c / length for c in ax]
+    ref = (0.0, 0.0, 1.0) if abs(ax[2]) < 0.9 else (1.0, 0.0, 0.0)
+    e1 = [ax[1] * ref[2] - ax[2] * ref[1], ax[2] * ref[0] - ax[0] * ref[2], ax[0] * ref[1] - ax[1] * ref[0]]
+    n1 = math.sqrt(sum(c * c for c in e1)) or 1.0
+    e1 = [c / n1 for c in e1]
+    e2 = [ax[1] * e1[2] - ax[2] * e1[1], ax[2] * e1[0] - ax[0] * e1[2], ax[0] * e1[1] - ax[1] * e1[0]]
+    return ax, e1, e2
+
+
+def _rod(p0, p1, radius, segs):
+    """Capped cylinder between two points, outward normals."""
+    _ax, e1, e2 = _frame(p0, p1)
+    verts = []
+    for p in (p0, p1):
+        for k in range(segs):
+            a = 2 * math.pi * k / segs
+            c, s_ = math.cos(a) * radius, math.sin(a) * radius
+            verts.append(tuple(p[i] + c * e1[i] + s_ * e2[i] for i in range(3)))
+    faces = []
+    for k in range(segs):
+        nxt = (k + 1) % segs
+        faces.append((k, nxt, segs + nxt, segs + k))
+    faces.append(tuple(range(segs - 1, -1, -1)))
+    faces.append(tuple(range(segs, 2 * segs)))
+    return verts, faces
+
+
+def _box8(corners):
+    """corners: bottom ring (4, counter-clockwise from above) then top ring."""
+    faces = [
+        (3, 2, 1, 0), (4, 5, 6, 7),
+        (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7),
+    ]
+    return list(corners), faces
+
+
+def _beam(p0, p1, width, depth):
+    """Deck plate: top surface on the p0->p1 line, ``depth`` thick, level across."""
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    run = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / run * width / 2.0, dx / run * width / 2.0
+    corners = []
+    for dz in (-depth, 0.0):
+        corners.extend([
+            (p0[0] - nx, p0[1] - ny, p0[2] + dz),
+            (p1[0] - nx, p1[1] - ny, p1[2] + dz),
+            (p1[0] + nx, p1[1] + ny, p1[2] + dz),
+            (p0[0] + nx, p0[1] + ny, p0[2] + dz),
+        ])
+    return _box8(corners)
+
+
+def _vbox(x, y, z0, z1, length, width, axis_deg):
+    a = math.radians(axis_deg)
+    ux, uy = math.cos(a) * length / 2.0, math.sin(a) * length / 2.0
+    vx, vy = -math.sin(a) * width / 2.0, math.cos(a) * width / 2.0
+    ring = [(x - ux - vx, y - uy - vy), (x + ux - vx, y + uy - vy), (x + ux + vx, y + uy + vy), (x - ux + vx, y - uy + vy)]
+    corners = [(px, py, z0) for px, py in ring] + [(px, py, z1) for px, py in ring]
+    return _box8(corners)
 
 
 def _place(verts, origin, mode: str):
@@ -196,7 +363,7 @@ def _place(verts, origin, mode: str):
     return [(x + ox, y + oy, z + oz) for x, y, z in verts]
 
 
-_FLAT_PIECES = ("_Handrail", "_Girder_", "_BaseRing", "_Rim", "_Stair")
+_FLAT_PIECES = ("_handrail", "_wind_girder_", "_base_ring", "_top_rim", "_stair", "_deck", "_support_", "_brace_", "_rail_", "_post_")
 
 
 def _object(name, verts, faces, material):
@@ -250,30 +417,37 @@ def _export(path: Path, objects) -> None:
         bake_space_transform=False,
         mesh_smooth_type="FACE",
         path_mode="STRIP",
-        object_types={"MESH"},
+        object_types={"MESH", "EMPTY"},
     )
 
 
 def _sample_vertex(objects) -> list[float]:
-    wall = next((obj for obj in objects if obj.name.endswith(("_Wall", "_Sphere"))), objects[0])
-    vertex = wall.data.vertices[0].co
-    return [float(vertex.x), float(vertex.y), float(vertex.z)]
+    """World position of the first vertex of the tank body (parent offset applied)."""
+    body = next((obj for obj in objects if obj.name.endswith("_body")), None)
+    if body is None:
+        body = next(obj for obj in objects if obj.type == "MESH")
+    vertex = body.data.vertices[0].co
+    loc = body.parent.location if body.parent is not None else (0.0, 0.0, 0.0)
+    return [float(vertex.x + loc[0]), float(vertex.y + loc[1]), float(vertex.z + loc[2])]
 
 
 def _reimport_sample(path: Path, tank_id: str):
     before = {obj.name for obj in bpy.data.objects}
     bpy.ops.import_scene.fbx(filepath=str(path))
-    imported = [obj for obj in bpy.data.objects if obj.name not in before and obj.type == "MESH"]
+    new = [obj for obj in bpy.data.objects if obj.name not in before]
+    bpy.context.view_layer.update()
+    imported = [obj for obj in new if obj.type == "MESH"]
     names = sorted(obj.name for obj in imported)
     sample = None
     props = {}
     for obj in imported:
-        if "Wall" in obj.name or "Sphere" in obj.name:
-            vertex = obj.data.vertices[0].co
-            sample = [float(vertex.x), float(vertex.y), float(vertex.z)]
+        if "_body" in obj.name:
+            world = obj.matrix_world @ obj.data.vertices[0].co
+            sample = [float(world.x), float(world.y), float(world.z)]
             props = {key: obj[key] for key in obj.keys() if key != "_RNA_UI"}
+            props["parent"] = obj.parent.name if obj.parent is not None else ""
             break
-    for obj in imported:
+    for obj in new:
         bpy.data.objects.remove(obj, do_unlink=True)
     return sample, names, props
 

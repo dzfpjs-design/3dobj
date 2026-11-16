@@ -14,7 +14,8 @@ from tankextract.detect import DetectConfig, SceneAccumulator, refine_candidates
 from tankextract.discover import Block, discover_blocks
 from tankextract.model import Tank
 from tankextract.osgb_reader import OsgbError
-from tankextract.sidecar import write_sidecars
+from tankextract.connectors import find_connectors
+from tankextract.sidecar import write_connectors, write_sidecars
 from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv
 
 _LEVEL_RE = re.compile(r"_L(\d+)(?:_|\.)", re.IGNORECASE)
@@ -40,6 +41,8 @@ class RunOptions:
     segments: int = 96
     no_blender: bool = False
     limit_tiles: int | None = None
+    connectors: bool = True
+    sphere_bracing: bool = True
 
 
 def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
@@ -62,32 +65,46 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
         max_aspect=options.max_aspect,
     )
     tanks: list[Tank] = []
+    connectors: list = []
     debug: list[dict] = []
+    conn_debug: list[dict] = []
     stats = {"python": 0, "osgconv": 0, "tiles": 0}
     for block in blocks:
         log(
             f"块 {block.label}: SRS={block.srs} 原点={block.origin[0]:.3f},"
             f"{block.origin[1]:.3f},{block.origin[2]:.3f} 瓦片文件 {len(block.osgb_names)}"
         )
-        found = _detect_block(block, options, config, osgconv, stats, log, debug)
+        found, links = _detect_block(block, options, config, osgconv, stats, log, debug, conn_debug)
         tanks.extend(found)
+        connectors.extend(links)
     tanks.sort(key=lambda item: (item.block, round(item.center_x, 2), round(item.center_y, 2)))
     for index, tank in enumerate(tanks, start=1):
         tank.name = f"Tank_{index:03d}"
+        if tank.sphere and tank.sphere.get("legs") and options.sphere_bracing:
+            tank.sphere["bracing"] = "X"
+    for conn in connectors:
+        conn.refresh_names()
+    connectors.sort(key=lambda c: (c.block, c.tank_a, c.tank_b))
+    for index, conn in enumerate(connectors, start=1):
+        conn.name = f"Connector_{index:03d}"
     output.mkdir(parents=True, exist_ok=True)
     mode = "local" if options.local_offset else "absolute"
     write_sidecars(tanks, output, mode)
+    write_connectors(connectors, output, mode)
+    (output / "connectors_debug.json").write_text(
+        json.dumps(conn_debug, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
+    )
     _write_candidate_report(debug, tanks, output)
     spec_path = output / "tanks_spec.json"
     spec_path.write_text(
-        json.dumps(_spec(tanks, options), ensure_ascii=False, indent=2),
+        json.dumps(_spec(tanks, options, connectors), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     (output / "read_stats.json").write_text(
         json.dumps({"reader_requested": options.reader, "osgconv": osgconv, **stats}, indent=2),
         encoding="utf-8",
     )
-    log(f"检测到 {len(tanks)} 个罐。读取统计: {stats}")
+    log(f"检测到 {len(tanks)} 个罐，{len(connectors)} 处罐间连接（走道/管道）。读取统计: {stats}")
     if options.no_blender:
         log("已跳过 Blender（--no-blender）。侧车文件和 tanks_spec.json 已写出。")
         return tanks
@@ -101,7 +118,7 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     return tanks
 
 
-def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgconv, stats, log, debug=None) -> list[Tank]:
+def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgconv, stats, log, debug=None, conn_debug=None):
     selected = _select_tiles(block.osgb_names, options.lod)
     if options.limit_tiles:
         selected = selected[: options.limit_tiles]
@@ -138,7 +155,7 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
     rough = accumulator.candidates()
     log(f"  {block.label}: 候选圆柱 {len(rough)}，参与几何的瓦片 {len(loaded)}")
     if not rough:
-        return []
+        return [], []
     # Second pass: only tiles whose box overlaps a candidate.
     tiles = []
     for name, _used in loaded:
@@ -152,7 +169,7 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
             absolute[:, 1] += block.origin[1]
             absolute[:, 2] += block.origin[2]
             tiles.append((absolute, mesh.triangles))
-    return refine_candidates(
+    found = refine_candidates(
         rough,
         tiles,
         config,
@@ -162,6 +179,10 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
         block.origin,
         debug=debug,
     )
+    links = find_connectors(found, tiles, accumulator.ground_near, conn_debug) if options.connectors else []
+    if links:
+        log(f"  {block.label}: 罐间连接 {len(links)} 处")
+    return found, links
 
 
 def _write_candidate_report(debug: list[dict], tanks: list[Tank], output: Path) -> None:
@@ -209,7 +230,7 @@ def _box_for(accumulator: SceneAccumulator, name: str):
 
 def _overlaps_any(box: np.ndarray, candidates) -> bool:
     for candidate in candidates:
-        margin = candidate.radius + 3.5
+        margin = candidate.radius + 5.0  # + corridor to neighbouring tanks
         if box[1, 0] < candidate.cx - margin or box[0, 0] > candidate.cx + margin:
             continue
         if box[1, 1] < candidate.cy - margin or box[0, 1] > candidate.cy + margin:
@@ -261,7 +282,21 @@ def _level(name: str) -> int:
     return int(found[-1])
 
 
-def _spec(tanks: list[Tank], options: RunOptions) -> dict:
+_SPHERE_Z_KEYS = ("center_z", "leg_bottom", "leg_top", "leg_contact_z")
+
+
+def _local_sphere(tank: Tank) -> dict | None:
+    if not tank.sphere:
+        return None
+    sphere = dict(tank.sphere)
+    sphere.setdefault("leg_bottom", tank.z_base)
+    for key in _SPHERE_Z_KEYS:
+        if key in sphere:
+            sphere[key] = float(sphere[key]) - tank.origin[2]
+    return sphere
+
+
+def _spec(tanks: list[Tank], options: RunOptions, connectors=None) -> dict:
     records = []
     for tank in tanks:
         lx, ly = tank.center_local
@@ -295,20 +330,36 @@ def _spec(tanks: list[Tank], options: RunOptions) -> dict:
                 ),
                 "spiral_stair": tank.spiral_stair,
                 "handrail_height": tank.handrail_height,
-                "sphere": (
-                    None
-                    if not tank.sphere
-                    else {**tank.sphere, "center_z": tank.sphere["center_z"] - tank.origin[2],
-                          "leg_bottom": tank.sphere.get("leg_bottom", tank.z_base) - tank.origin[2]}
-                ),
+                "sphere": _local_sphere(tank),
                 "epsg": tank.srs,
                 "rms_m": tank.rms,
             }
         )
+    links = []
+    for conn in connectors or []:
+        ox, oy, oz = conn.origin
+        links.append({
+            "id": conn.name,
+            "kind": conn.kind,
+            "tank_a": conn.tank_a,
+            "tank_b": conn.tank_b,
+            "origin": list(conn.origin),
+            "start_local": [conn.x0 - ox, conn.y0 - oy, conn.z0 - oz],
+            "end_local": [conn.x1 - ox, conn.y1 - oy, conn.z1 - oz],
+            "width": conn.width,
+            "depth": conn.depth,
+            "handrail_height": conn.handrail_height,
+            "supports": [
+                {**sp, "x": sp["x"] - ox, "y": sp["y"] - oy, "z_bottom": sp["z_bottom"] - oz, "z_top": sp["z_top"] - oz}
+                for sp in conn.supports
+            ],
+            "epsg": conn.srs,
+        })
     return {
         "coordinate_mode": "local" if options.local_offset else "absolute",
         "segments": options.segments,
         "tanks": records,
+        "connectors": links,
     }
 
 

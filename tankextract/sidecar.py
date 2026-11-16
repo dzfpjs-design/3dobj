@@ -6,6 +6,7 @@ import csv
 import json
 from pathlib import Path
 
+from tankextract.connectors import Connector
 from tankextract.model import Tank
 
 _CSV_FIELDS = [
@@ -37,6 +38,11 @@ _CSV_FIELDS = [
     "handrail_height_m",
     "sphere_center_z",
     "sphere_leg_count",
+    "sphere_leg_diameter_m",
+    "sphere_leg_rho_m",
+    "sphere_leg_height_m",
+    "sphere_leg_azimuth_deg",
+    "sphere_bracing",
     "origin_x",
     "origin_y",
     "origin_z",
@@ -103,6 +109,58 @@ def _write_csv(tanks: list[Tank], path: Path) -> None:
         writer.writeheader()
         for tank in tanks:
             writer.writerow(tank.to_dict())
+
+
+_CONNECTOR_FIELDS = [
+    "id", "kind", "tank_a", "tank_b", "x0", "y0", "z0", "x1", "y1", "z1", "length_m", "slope_deg",
+    "width_m", "depth_m", "handrail_height_m", "support_count", "supports", "fill", "srs",
+]
+
+
+def write_connectors(connectors: list[Connector], output: Path, coordinate_mode: str) -> None:
+    """connectors.csv / connectors.geojson (absolute SRS coordinates)."""
+    import math
+
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "connectors.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_CONNECTOR_FIELDS)
+        writer.writeheader()
+        for conn in connectors:
+            run = conn.length
+            writer.writerow({
+                "id": conn.name, "kind": conn.kind, "tank_a": conn.tank_a, "tank_b": conn.tank_b,
+                "x0": f"{conn.x0:.3f}", "y0": f"{conn.y0:.3f}", "z0": f"{conn.z0:.3f}",
+                "x1": f"{conn.x1:.3f}", "y1": f"{conn.y1:.3f}", "z1": f"{conn.z1:.3f}",
+                "length_m": f"{run:.3f}",
+                "slope_deg": f"{math.degrees(math.atan2(conn.z1 - conn.z0, run)) if run > 0 else 0.0:.2f}",
+                "width_m": f"{conn.width:.3f}", "depth_m": f"{conn.depth:.3f}",
+                "handrail_height_m": "" if conn.handrail_height is None else f"{conn.handrail_height:.3f}",
+                "support_count": len(conn.supports),
+                "supports": json.dumps([{k: round(v, 3) for k, v in sp.items()} for sp in conn.supports]),
+                "fill": f"{conn.fill:.2f}", "srs": conn.srs,
+            })
+    features = []
+    for conn in connectors:
+        props = {k: v for k, v in conn.to_dict().items() if k not in ("supports", "origin")}
+        props["supports"] = conn.supports
+        props["coordinate_mode"] = coordinate_mode
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[conn.x0, conn.y0, conn.z0], [conn.x1, conn.y1, conn.z1]]},
+            "properties": props,
+        })
+        for index, sp in enumerate(conn.supports, start=1):
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [sp["x"], sp["y"], sp["z_bottom"]]},
+                "properties": {"id": f"{conn.name}_Support_{index:02d}", "connector": conn.name, **sp},
+            })
+    srs = connectors[0].srs if connectors else ""
+    document = {
+        "type": "FeatureCollection", "name": "connectors",
+        "crs": {"type": "name", "properties": {"name": srs}}, "features": features,
+    }
+    (output / "connectors.geojson").write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _srs_slug(srs: str) -> str:

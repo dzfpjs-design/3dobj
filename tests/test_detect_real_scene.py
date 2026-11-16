@@ -155,6 +155,10 @@ def test_sphere_on_legs_and_dome_with_handrail():
     assert abs(sphere.sphere["radius"] - 6.0) < 0.15
     assert abs(sphere.sphere["center_z"] - zc) < 0.2
     assert len(sphere.sphere["legs"]) == 8
+    assert abs(sphere.sphere["leg_diameter"] - 0.6) < 0.15
+    assert abs(sphere.sphere["leg_rho"] - 5.85) < 0.2
+    gaps = np.diff(sorted(sphere.sphere["legs"]))
+    assert np.allclose(gaps, 45.0, atol=1.0)
     dome = by_x[55]
     assert dome.roof_type == "dome"
     assert abs(dome.wall_height - 12.0) < 0.15

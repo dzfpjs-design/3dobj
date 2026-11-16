@@ -1085,12 +1085,63 @@ def _sphere_legs(wall_pts, center, radius: float, ground: float, center_z: float
         legs.append(float(mean))
     if not (3 <= len(legs) <= 24):
         return {"legs": []}
+    legs = _regular_legs(sorted(legs))
+    # Leg size and position: a circle fit to the vertical faces of each leg
+    # low down, where nothing else is attached.
+    z_hi = min(ground + 4.0, center_z - 0.6 * radius)
+    low = (z > ground + 1.0) & (z < z_hi) & (rho > 0.6 * radius) & (rho < 1.1 * radius)
+    ang_all = np.degrees(np.arctan2(wall_pts[:, 1] - center[1], wall_pts[:, 0] - center[0])) % 360.0
+    diameters, rhos = [], []
+    for leg in legs:
+        near = low & (np.abs((ang_all - leg + 180.0) % 360.0 - 180.0) < 7.0)
+        if near.sum() < 12:
+            continue
+        px = wall_pts[near, 0] - center[0]
+        py = wall_pts[near, 1] - center[1]
+        a_ = np.column_stack([px, py, np.ones(len(px))])
+        sol = np.linalg.lstsq(a_, px * px + py * py, rcond=None)[0]
+        xc, yc = sol[0] / 2.0, sol[1] / 2.0
+        rr = float(np.sqrt(max(sol[2] + xc * xc + yc * yc, 0.0)))
+        if 0.05 < rr < 0.8:
+            diameters.append(2.0 * rr)
+            rhos.append(float(np.hypot(xc, yc)))
+    leg_d = float(np.clip(np.median(diameters), 0.2, 1.2)) if diameters else 0.6
+    leg_rho = float(np.median(rhos)) if rhos else float(np.median(rho[sel]))
+    # Where a vertical leg at leg_rho meets the sphere (its welded top).
+    contact = center_z - float(np.sqrt(max(radius * radius - leg_rho * leg_rho, 0.0)))
     return {
-        "legs": sorted(legs),
-        "leg_rho": float(np.median(rho[sel])),
-        "leg_radius": 0.3,
+        "legs": legs,
+        "leg_rho": leg_rho,
+        "leg_radius": leg_d / 2.0,
+        "leg_diameter": leg_d,
+        "leg_diameter_samples": len(diameters),
         "leg_bottom": float(ground),
+        "leg_top": float(center_z),
+        "leg_contact_z": float(contact),
     }
+
+
+def _regular_legs(peaks: list[float]) -> list[float]:
+    """Snap leg azimuths to an even spacing when the peaks support one.
+
+    Support legs of a sphere are evenly spaced; mesh clutter (stairs, pipes)
+    adds or merges a peak now and then.
+    """
+    if len(peaks) < 3:
+        return peaks
+    arr = np.sort(np.asarray(peaks) % 360.0)
+    gaps = np.diff(np.concatenate([arr, arr[:1] + 360.0]))
+    spacing = float(np.median(gaps))
+    n = int(round(360.0 / spacing)) if spacing > 0 else 0
+    if not (3 <= n <= 24):
+        return peaks
+    step = 360.0 / n
+    phase = np.degrees(np.angle(np.mean(np.exp(1j * np.radians(arr * n))))) / n
+    slots = (phase + step * np.arange(n)) % 360.0
+    hit = [np.min(np.abs((slots - p + 180.0) % 360.0 - 180.0)) < 0.25 * step for p in arr]
+    if np.mean(hit) < 0.7:
+        return peaks
+    return sorted(float(a) for a in slots)
 
 
 def _cone_or_dome(roof: str, roof_pts, center, radius: float, z_top: float) -> str:
