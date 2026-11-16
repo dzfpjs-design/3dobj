@@ -98,8 +98,8 @@ def _parts_zmin(parts):
             z.append(min(p["p0"][2], p["p1"][2]) - p["depth"])
         elif k == "box":
             z.append(p["center"][2] - p["size"][2] / 2)
-        elif k == "rod":
-            z.append(min(p["p0"][2], p["p1"][2]))
+        elif k == "rod":  # round end: a sloped rod dips by up to its radius below the lower end
+            z.append(min(p["p0"][2], p["p1"][2]) - (p["radius"] if p["p0"][:2] != p["p1"][:2] else 0.0))
         elif k in ("prism", "cylinder"):
             z.append(p["z0"])
     return min(z)

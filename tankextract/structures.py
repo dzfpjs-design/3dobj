@@ -245,7 +245,7 @@ def stair_tower_parts(t: dict, prefix: str) -> list:
         for k in range(4):
             parts.append(beam(f"{prefix}_beam_{i:02d}", (*ring[k], z), (*ring[k + 1], z), 0.12, 0.18))
     # Diagonal bracing on the four faces, one diagonal per storey, alternating.
-    zz = [zg] + levels
+    zz = [zg + 0.05] + levels  # a sloped rod's round end dips r*cos below its end point: keep it out of the ground
     for i in range(len(zz) - 1):
         for k in range(4):
             p0, p1 = ring[k], ring[k + 1]
