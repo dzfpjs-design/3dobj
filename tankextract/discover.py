@@ -11,6 +11,12 @@ from xml.etree import ElementTree
 _OSGB_SUFFIXES = (".osgb",)
 
 
+def _is_junk(name: str) -> bool:
+    """macOS archive debris: AppleDouble resource forks (``._Tile_...osgb``) and ``__MACOSX/``."""
+    parts = name.replace("\\", "/").split("/")
+    return any(part.startswith("._") or part == "__MACOSX" or part == ".DS_Store" for part in parts)
+
+
 @dataclass
 class Block:
     """One oblique-photogrammetry block sharing a single SRSOrigin."""
@@ -79,7 +85,9 @@ def _block_from_dir(folder: Path) -> Block:
     names = []
     for file in folder.rglob("*"):
         if file.is_file() and file.suffix.lower() in _OSGB_SUFFIXES:
-            names.append(file.relative_to(folder).as_posix())
+            rel = file.relative_to(folder).as_posix()
+            if not _is_junk(rel):
+                names.append(rel)
     if not names:
         raise FileNotFoundError(f"{folder} 中没有 .osgb 瓦片")
     rel_meta = metadata.relative_to(folder).as_posix()
@@ -96,7 +104,7 @@ def _block_from_dir(folder: Path) -> Block:
 
 def _block_from_zip(archive_path: Path) -> Block:
     with zipfile.ZipFile(archive_path) as archive:
-        names = [name for name in archive.namelist() if not name.endswith("/")]
+        names = [name for name in archive.namelist() if not name.endswith("/") and not _is_junk(name)]
         meta_candidates = [name for name in names if posixpath.basename(name).lower() == "metadata.xml"]
         if not meta_candidates:
             raise FileNotFoundError(f"{archive_path} 中没有 metadata.xml")

@@ -348,6 +348,10 @@ def collect_corridor_faces(tiles, boxes) -> np.ndarray:
     for vertices, triangles in tiles:
         if len(vertices) == 0 or len(triangles) == 0:
             continue
+        vlo, vhi = vertices[:, :2].min(axis=0), vertices[:, :2].max(axis=0)
+        hit = (bx[:, 0] < vhi[0]) & (bx[:, 2] > vlo[0]) & (bx[:, 1] < vhi[1]) & (bx[:, 3] > vlo[1])
+        if not hit.any():
+            continue
         a = vertices[triangles[:, 0]]
         b = vertices[triangles[:, 1]]
         c = vertices[triangles[:, 2]]
@@ -356,7 +360,7 @@ def collect_corridor_faces(tiles, boxes) -> np.ndarray:
         if not sel.any():
             continue
         inside = np.zeros(len(cen), bool)
-        for x0, y0, x1, y1 in bx:
+        for x0, y0, x1, y1 in bx[hit]:
             inside |= sel & (cen[:, 0] > x0) & (cen[:, 0] < x1) & (cen[:, 1] > y0) & (cen[:, 1] < y1)
         if not inside.any():
             continue

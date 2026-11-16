@@ -43,6 +43,8 @@ class DetectConfig:
     # A tank is a closed shell: almost no mesh inside it between floor and
     # roof. Circles traced through process-plant clutter fail this.
     max_interior_ratio: float = 0.2
+    # Cone / dome roof rise limit, in radii (real roofs: about 0.1-0.6 R).
+    max_roof_rise: float = 1.0
     # Mean fraction of the wall height present per 10-degree sector.
     min_wall_fill: float = 0.6
     split_max_cells: int = 80000
@@ -189,8 +191,14 @@ def refine_candidates(
     appended to it.
     """
     tanks: list[Tank] = []
+    # xy bounds of every tile, once: each candidate then only scans the tiles it touches
+    # (scanning every tile per candidate made big blocks quadratic: hours on A_OSGB_cip)
+    bounds = _tile_bounds(tiles)
     for candidate in candidates:
-        samples = _collect_samples(candidate, tiles)
+        m = candidate.radius + 4.2
+        near = np.flatnonzero((bounds[:, 0] < candidate.cx + m) & (bounds[:, 2] > candidate.cx - m)
+                              & (bounds[:, 1] < candidate.cy + m) & (bounds[:, 3] > candidate.cy - m))
+        samples = _collect_samples(candidate, [tiles[i] for i in near])
         info: dict = {}
         tank = _measure(candidate, samples, config, ground_at, block, srs, origin, info)
         if tank is not None:
@@ -401,13 +409,19 @@ def _split_component(keys: list, bins: dict, config: DetectConfig, max_circles: 
             if not (config.min_radius <= r <= config.max_radius):
                 continue
             tol = max(0.15, 0.025 * r)
-            cand = tree.query_ball_point((ux, uy), r + tol)
-            if len(cand) < 24:
+            expected = 2.0 * np.pi * r / cell
+            # cheap pre-check: points in the ring = inside r+tol minus inside r-tol (counts only,
+            # no index lists), so the many hopeless trials on big plant-wide components cost little
+            n_out = tree.query_ball_point((ux, uy), r + tol, return_length=True)
+            if n_out < 24:
                 continue
+            n_in = tree.query_ball_point((ux, uy), r - tol, return_length=True) if r > tol else 0
+            if n_out - n_in < 0.35 * expected:
+                continue
+            cand = tree.query_ball_point((ux, uy), r + tol)
             cand = idx[np.asarray(cand)]
             dist = np.hypot(local[cand, 0] - ux, local[cand, 1] - uy)
             on = cand[np.abs(dist - r) <= tol]
-            expected = 2.0 * np.pi * r / cell
             if len(on) < 0.35 * expected:
                 continue
             ang = np.arctan2(local[on, 1] - uy, local[on, 0] - ux)
@@ -594,6 +608,16 @@ def _drop_swallowed(found: list[_Candidate]) -> list[_Candidate]:
 def _same_tank(a: _Candidate, b: _Candidate) -> bool:
     dist = np.hypot(a.cx - b.cx, a.cy - b.cy)
     return dist < 0.35 * max(a.radius, b.radius) and abs(a.radius - b.radius) < 0.12 * max(a.radius, b.radius)
+
+
+def _tile_bounds(tiles) -> np.ndarray:
+    """(N, 4) x0, y0, x1, y1 of each tile's vertices (empty tiles get an empty box)."""
+    out = np.full((len(tiles), 4), [np.inf, np.inf, -np.inf, -np.inf])
+    for i, (vertices, triangles) in enumerate(tiles):
+        if len(vertices) and len(triangles):
+            out[i, :2] = vertices[:, :2].min(axis=0)
+            out[i, 2:] = vertices[:, :2].max(axis=0)
+    return out
 
 
 def _collect_samples(candidate: _Candidate, tiles: list[tuple[np.ndarray, np.ndarray]]) -> dict[str, np.ndarray]:
@@ -801,6 +825,16 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
             else:
                 rise, _total = _roof_height(roof_cloud, center, radius, z_base, z_top, roof)
         total = wall_h + rise
+        # After the handrail / eave split the shell must still be a wall, and a storage-tank
+        # roof never rises more than about one radius: anything taller sitting on the circle
+        # is other equipment stacked on a short drum or a plinth (e.g. a small tank on a pump
+        # house), not a roof.
+        if wall_h < config.min_height:
+            info["reason"] = "height (wall below the roof too short)"
+            return None
+        if roof != "flat" and rise > config.max_roof_rise * radius:
+            info["reason"] = "roof too tall for a tank (stacked equipment)"
+            return None
         rim = _top_rim(samples["roof"], samples["outer"], samples["all"], center, radius, z_top)
         girders = _wind_girders(samples["outer"], center, radius, z_base, z_top)
         base_ring = _base_ring(samples["outer"], center, radius, z_base)
