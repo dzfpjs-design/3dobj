@@ -14,7 +14,8 @@ mkdir -p "$HOME/3dobj_env"
 curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest \
   | tar -C "$HOME/3dobj_env" -xvj bin/micromamba
 
-# 2. conda-forge 的 OpenSceneGraph 3.6.5 + Python 3.11 + numpy
+# 2. conda-forge 的 OpenSceneGraph 3.6.5 + Python 3.11 + numpy + scipy
+#    （检测用 scipy.spatial.cKDTree 把连在一起的筒壁拆成多个圆）
 "$HOME/3dobj_env/bin/micromamba" create -y -p "$HOME/3dobj_env/osg" -c conda-forge \
   python=3.11 numpy scipy "openscenegraph=3.6.5"
 
