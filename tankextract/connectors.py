@@ -41,6 +41,8 @@ class Connector:
     block: str = ""
     srs: str = ""
     origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rail_sides: list = field(default_factory=list)  # sides where the rail was seen (L = left of A->B)
+    rail_source: str = ""  # measured / assumed (site median, rail not visible in the mesh)
     tank_refs: tuple = field(default=(), repr=False, compare=False)
 
     @property
@@ -198,13 +200,25 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
     # Depth: downward faces just under the deck.
     down = gap & (nz < -0.7) & (lat < width / 2 + 0.1) & (z < deck - 0.03) & (z > deck - 1.5)
     depth = float(np.clip(np.median(deck[down] - z[down]), 0.08, 1.5)) if down.sum() >= 5 else 0.2
-    # Railing: anything 0.3-1.6 m above the deck near either edge, along most of the length.
-    above = gap & (z > deck + 0.3) & (z < deck + 1.6) & (lat > width / 2 - 0.35) & (lat < width / 2 + 0.25)
+    # Railing: anything 0.3-1.6 m above the deck near either edge.  A continuous rail
+    # covers most stations; on thin meshes only the posts survive, so a side whose
+    # stations are hit at >= 25 % (posts every ~1-2 m) also counts.
     rail = None
-    if above.sum() >= 10:
-        cover = len(np.unique(np.floor((s[above] - s0) / step))) / max(nbins, 1)
-        if cover >= 0.5:
-            rail = float(np.percentile(z[above] - deck[above], 95))
+    rail_sides = []
+    side_t = t - t_c
+    above = gap & (z > deck + 0.3) & (z < deck + 1.6) & (lat > width / 2 - 0.35) & (lat < width / 2 + 0.25)
+    heights = []
+    for name, sgn in (("L", 1.0), ("R", -1.0)):
+        sel = above & (side_t * sgn > 0)
+        if sel.sum() < 6:
+            continue
+        cover = len(np.unique(np.floor((s[sel] - s0) / step))) / max(nbins, 1)
+        if cover >= 0.25:
+            rail_sides.append(name)
+            heights.append(z[sel] - deck[sel])
+    if heights:
+        rail = float(np.percentile(np.concatenate(heights), 95))
+    info["rail_sides"] = rail_sides
     info.update(width=width, depth=depth, rail=rail)
     if width < 0.25:
         info["reason"] = "too narrow"
@@ -269,6 +283,7 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
         x0=float(p0[0]), y0=float(p0[1]), z0=float(np.polyval(coef, s_lo)),
         x1=float(p1[0]), y1=float(p1[1]), z1=float(np.polyval(coef, s_hi)),
         width=width, depth=depth, handrail_height=rail, fill=float(fill), supports=supports,
+        rail_sides=rail_sides, rail_source="measured" if rail is not None else "",
     )
     info["reason"] = "ok"
     return conn, info

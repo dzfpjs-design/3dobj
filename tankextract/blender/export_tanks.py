@@ -63,6 +63,17 @@ def main() -> None:
         _export(path, objects)
         report["connectors_file"] = str(path)
         report["connector_objects"] = [obj.name for obj in objects]
+    extras = spec.get("structures") or []
+    if extras:
+        _reset_scene()
+        material = _white_material()
+        objects = []
+        for st in extras:
+            objects.extend(_build_structure(st, mode, material))
+        path = output / "structures.fbx"
+        _export(path, objects)
+        report["structures_file"] = str(path)
+        report["structure_objects"] = [obj.name for obj in objects]
     if merge and all_objects:
         # Rebuild so per-tank exports (which reimport) cannot disturb the merge.
         _reset_scene()
@@ -72,6 +83,8 @@ def main() -> None:
             merged.extend(_build_tank(tank, segments, mode, material))
         for conn in links:
             merged.extend(_build_connector(conn, mode, material))
+        for st in extras:
+            merged.extend(_build_structure(st, mode, material))
         path = output / "tanks_all.fbx"
         _export(path, merged)
         report["merged"] = str(path)
@@ -144,8 +157,9 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
         if sphere.get("bracing") and len(legs) >= 3:
             # X bracing between neighbouring legs, from just above the base to
             # just under where the legs meet the shell.
-            lo = bottom + 0.8
-            hi = float(sphere.get("leg_contact_z", zc - 0.25 * rs)) - 0.5
+            lo = float(sphere["brace_z0"]) if sphere.get("brace_z0") is not None else bottom + 0.8
+            hi = (float(sphere["brace_z1"]) if sphere.get("brace_z1") is not None
+                  else float(sphere.get("leg_contact_z", zc - 0.25 * rs)) - 0.5)
             if hi > lo + 1.0:
                 pts = [
                     (cx + leg_rho * math.cos(math.radians(a)), cy + leg_rho * math.sin(math.radians(a)))
@@ -155,6 +169,7 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
                     (x0, y0), (x1, y1) = pts[index], pts[(index + 1) % len(pts)]
                     pieces.append((f"brace_{index + 1:02d}a", *_rod((x0, y0, lo), (x1, y1, hi), 0.05, 8)))
                     pieces.append((f"brace_{index + 1:02d}b", *_rod((x0, y0, hi), (x1, y1, lo), 0.05, 8)))
+        pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"]))
         return _finish(pieces, tank, mode, material, tank["id"], (cx, cy, z0))
     pieces.append(("body", *_cylinder(cx, cy, z0, z1, radius, segments)))
     handrail = tank.get("handrail_height")
@@ -203,6 +218,7 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
                 *_stair(cx, cy, z0, float(tank["wall_height"]), max(outer - width, radius + 0.05), outer, turns, segments // 2),
             )
         )
+    pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"]))
     return _finish(pieces, tank, mode, material, tank["id"], (cx, cy, z0))
 
 
@@ -274,6 +290,8 @@ def _build_connector(conn: dict, mode: str, material) -> list:
                     z = p0[2] + (p1[2] - p0[2]) * f
                     pieces.append((f"post_{side}_{k + 1:02d}", *_rod((x, y, z), (x, y, z + rail), 0.025, 6)))
     for index, sp in enumerate(conn.get("supports") or [], start=1):
+        if sp.get("stair_tower"):
+            continue  # modelled as its own Stair_### group (open frame, flights, landings)
         pieces.append((
             f"support_{index:02d}",
             *_vbox(float(sp["x"]), float(sp["y"]), float(sp["z_bottom"]), float(sp["z_top"]),
@@ -288,6 +306,60 @@ def _build_connector(conn: dict, mode: str, material) -> list:
         obj["connector_id"] = cid
         obj["tank_a"] = conn.get("tank_a", "")
         obj["tank_b"] = conn.get("tank_b", "")
+    return objects
+
+
+def _part_pieces(parts, group: str) -> list:
+    """Primitive parts from the spec (rod / beam / box / prism) -> (name, verts, faces).
+
+    Part names carry the group prefix (``Tank_015_pedestal_01``); the piece name is the
+    remainder so ``_finish`` names the object ``{group}_{rest}``."""
+    out = []
+    for part in parts:
+        name = part["name"]
+        rest = name[len(group) + 1:] if name.startswith(group + "_") else name
+        kind = part["type"]
+        if kind == "rod":
+            segs = 12 if part["radius"] > 0.1 else 8
+            out.append((rest, *_rod(part["p0"], part["p1"], part["radius"], segs)))
+        elif kind == "beam":
+            out.append((rest, *_beam(part["p0"], part["p1"], part["width"], part["depth"])))
+        elif kind == "box":
+            cx, cy, cz = part["center"]
+            length, width, height = part["size"]
+            out.append((rest, *_vbox(cx, cy, cz - height / 2, cz + height / 2, length, width, part["yaw_deg"])))
+        elif kind == "prism":
+            out.append((rest, *_prism(part["polygon"], part["z0"], part["z1"])))
+    return out
+
+
+def _prism(polygon, z0, z1):
+    pts = [tuple(p) for p in polygon]
+    area = sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1] for i in range(len(pts)))
+    if area < 0:
+        pts = pts[::-1]
+    n = len(pts)
+    verts = [(x, y, z0) for x, y in pts] + [(x, y, z1) for x, y in pts]
+    faces = [tuple(range(n - 1, -1, -1)), tuple(range(n, 2 * n))]
+    for k in range(n):
+        nxt = (k + 1) % n
+        faces.append((k, nxt, n + nxt, n + k))
+    return verts, faces
+
+
+def _build_structure(st: dict, mode: str, material) -> list:
+    """Free-standing structure (Stair_###, PipeRack_###, Pipe_###): one Empty, one object per part."""
+    sid = st["id"]
+    pieces = _part_pieces(st.get("parts") or [], sid)
+    meta = {
+        "id": sid, "origin": st["origin"], "epsg": st.get("epsg", ""), "radius": 0.0,
+        "wall_height": 0.0, "total_height": 0.0, "roof_type": st.get("kind", ""), "rms_m": 0.0,
+    }
+    objects = _finish(pieces, meta, mode, material, sid, st["anchor_local"])
+    for obj in objects:
+        obj["structure_id"] = sid
+        obj["structure_kind"] = st.get("kind", "")
+        obj["structure_parent"] = st.get("parent", "")
     return objects
 
 
@@ -363,7 +435,9 @@ def _place(verts, origin, mode: str):
     return [(x + ox, y + oy, z + oz) for x, y, z in verts]
 
 
-_FLAT_PIECES = ("_handrail", "_wind_girder_", "_base_ring", "_top_rim", "_stair", "_deck", "_support_", "_brace_", "_rail_", "_post_")
+_FLAT_PIECES = ("_handrail", "_wind_girder_", "_base_ring", "_top_rim", "_stair", "_deck", "_support_", "_brace", "_rail",
+                "_post_", "_pedestal_", "_platform", "_roof_walkway_", "_column_", "_beam_", "_crossbeam_", "_longbeam_",
+                "_flight_", "_landing_", "_top_deck", "_bridge_")
 
 
 def _object(name, verts, faces, material):

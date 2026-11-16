@@ -15,7 +15,8 @@ from tankextract.discover import Block, discover_blocks
 from tankextract.model import Tank
 from tankextract.osgb_reader import OsgbError
 from tankextract.connectors import find_connectors
-from tankextract.sidecar import write_connectors, write_sidecars
+from tankextract.structures import collect_faces, detect_structures, tank_boxes
+from tankextract.sidecar import write_connectors, write_sidecars, write_structures
 from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv
 
 _LEVEL_RE = re.compile(r"_L(\d+)(?:_|\.)", re.IGNORECASE)
@@ -43,6 +44,7 @@ class RunOptions:
     limit_tiles: int | None = None
     connectors: bool = True
     sphere_bracing: bool = True
+    structures: bool = True  # stair towers, roof platforms, wall stairs/pipes, pipe racks
 
 
 def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
@@ -66,6 +68,8 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     )
     tanks: list[Tank] = []
     connectors: list = []
+    structures: list = []
+    struct_stats: list = []
     debug: list[dict] = []
     conn_debug: list[dict] = []
     stats = {"python": 0, "osgconv": 0, "tiles": 0}
@@ -74,9 +78,12 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
             f"块 {block.label}: SRS={block.srs} 原点={block.origin[0]:.3f},"
             f"{block.origin[1]:.3f},{block.origin[2]:.3f} 瓦片文件 {len(block.osgb_names)}"
         )
-        found, links = _detect_block(block, options, config, osgconv, stats, log, debug, conn_debug)
+        found, links, extra, sstats = _detect_block(block, options, config, osgconv, stats, log, debug, conn_debug)
         tanks.extend(found)
         connectors.extend(links)
+        structures.extend(extra)
+        if sstats:
+            struct_stats.append({"block": block.label, **sstats})
     tanks.sort(key=lambda item: (item.block, round(item.center_x, 2), round(item.center_y, 2)))
     for index, tank in enumerate(tanks, start=1):
         tank.name = f"Tank_{index:03d}"
@@ -87,24 +94,30 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     connectors.sort(key=lambda c: (c.block, c.tank_a, c.tank_b))
     for index, conn in enumerate(connectors, start=1):
         conn.name = f"Connector_{index:03d}"
+    _assume_missing_rails(connectors, log)
+    if options.structures and tanks:
+        structures.extend(_detect_structures_all(tanks, connectors, log, struct_stats))
     output.mkdir(parents=True, exist_ok=True)
     mode = "local" if options.local_offset else "absolute"
     write_sidecars(tanks, output, mode)
     write_connectors(connectors, output, mode)
+    write_structures(structures, tanks, output, mode)
+    (output / "structures_stats.json").write_text(json.dumps(struct_stats, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     (output / "connectors_debug.json").write_text(
         json.dumps(conn_debug, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
     )
     _write_candidate_report(debug, tanks, output)
     spec_path = output / "tanks_spec.json"
     spec_path.write_text(
-        json.dumps(_spec(tanks, options, connectors), ensure_ascii=False, indent=2),
+        json.dumps(_spec(tanks, options, connectors, structures), ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
     (output / "read_stats.json").write_text(
         json.dumps({"reader_requested": options.reader, "osgconv": osgconv, **stats}, indent=2),
         encoding="utf-8",
     )
-    log(f"检测到 {len(tanks)} 个罐，{len(connectors)} 处罐间连接（走道/管道）。读取统计: {stats}")
+    log(f"检测到 {len(tanks)} 个罐，{len(connectors)} 处罐间连接（走道/管道），{len(structures)} 个独立附属结构"
+        f"（楼梯塔/管廊/管道）。读取统计: {stats}")
     if options.no_blender:
         log("已跳过 Blender（--no-blender）。侧车文件和 tanks_spec.json 已写出。")
         return tanks
@@ -155,7 +168,7 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
     rough = accumulator.candidates()
     log(f"  {block.label}: 候选圆柱 {len(rough)}，参与几何的瓦片 {len(loaded)}")
     if not rough:
-        return [], []
+        return [], [], [], {}
     # Second pass: only tiles whose box overlaps a candidate.
     tiles = []
     for name, _used in loaded:
@@ -182,7 +195,70 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
     links = find_connectors(found, tiles, accumulator.ground_near, conn_debug) if options.connectors else []
     if links:
         log(f"  {block.label}: 罐间连接 {len(links)} 处")
-    return found, links
+    faces = None
+    if options.structures and found:
+        faces = collect_faces(tiles, tank_boxes(found))
+        log(f"  {block.label}: 附属结构检测用面片 {len(faces)}")
+    for tank in found:
+        tank._faces = faces  # released after structure detection
+    return found, links, [], {}
+
+
+def _assume_missing_rails(connectors, log) -> None:
+    """Walkways high above the ground always carry guard rails; when the mesh is too thin to
+    show them, use the median measured rail height of the site (marked as assumed)."""
+    measured = [c.handrail_height for c in connectors if c.kind == "walkway" and c.handrail_height]
+    if not measured:
+        return
+    median = float(np.median(measured))
+    for conn in connectors:
+        if conn.kind == "walkway" and conn.handrail_height is None:
+            conn.handrail_height = median
+            conn.rail_source = "assumed (site median, rail not visible in mesh)"
+            log(f"  {conn.name}: 护栏在网格中不可见，按全场中位数 {median:.2f} m 补全")
+
+
+def _detect_structures_all(tanks, connectors, log, struct_stats) -> list:
+    out = []
+    groups: dict[int, list] = {}
+    for tank in tanks:
+        faces = getattr(tank, "_faces", None)
+        if faces is not None:
+            groups.setdefault(id(faces), [faces, []])[1].append(tank)
+    for faces, group in groups.values():
+        links = [c for c in connectors if c.tank_refs and c.tank_refs[0] in group]
+        found, sstats = detect_structures(group, links, faces, log)
+        block = group[0].block
+        for st in found:
+            st.block, st.srs, st.origin = block, group[0].srs, tuple(group[0].origin)
+        out.extend(found)
+        sstats["block"] = block
+        struct_stats.append(sstats)
+        log(f"  {block}: 附属结构 {sstats}")
+    for tank in tanks:
+        if hasattr(tank, "_faces"):
+            del tank._faces
+    # global names, ordered by kind then position
+    order = {"stair_tower": "Stair", "pipe_rack": "PipeRack", "pipe_run": "Pipe"}
+    for kind, prefix in order.items():
+        items = sorted([s for s in out if s.kind == kind], key=lambda s: (s.block, round(s.anchor[0], 1), round(s.anchor[1], 1)))
+        for index, st in enumerate(items, start=1):
+            _rename(st, f"{prefix}_{index:03d}")
+    for conn in connectors:
+        for sp in conn.supports:
+            tower = sp.get("_tower")
+            if tower is not None:
+                sp["stair_tower"] = tower.name
+                del sp["_tower"]
+    return out
+
+
+def _rename(st, new: str) -> None:
+    old = st.name
+    for part in st.parts:
+        if part["name"].startswith(old):
+            part["name"] = new + part["name"][len(old):]
+    st.name = new
 
 
 def _write_candidate_report(debug: list[dict], tanks: list[Tank], output: Path) -> None:
@@ -230,7 +306,7 @@ def _box_for(accumulator: SceneAccumulator, name: str):
 
 def _overlaps_any(box: np.ndarray, candidates) -> bool:
     for candidate in candidates:
-        margin = candidate.radius + 5.0  # + corridor to neighbouring tanks
+        margin = candidate.radius + 14.0  # + corridors, stair towers and pipe racks around it
         if box[1, 0] < candidate.cx - margin or box[0, 0] > candidate.cx + margin:
             continue
         if box[1, 1] < candidate.cy - margin or box[0, 1] > candidate.cy + margin:
@@ -282,7 +358,7 @@ def _level(name: str) -> int:
     return int(found[-1])
 
 
-_SPHERE_Z_KEYS = ("center_z", "leg_bottom", "leg_top", "leg_contact_z")
+_SPHERE_Z_KEYS = ("center_z", "leg_bottom", "leg_top", "leg_contact_z", "brace_z0", "brace_z1")
 
 
 def _local_sphere(tank: Tank) -> dict | None:
@@ -296,7 +372,21 @@ def _local_sphere(tank: Tank) -> dict | None:
     return sphere
 
 
-def _spec(tanks: list[Tank], options: RunOptions, connectors=None) -> dict:
+def _local_part(part: dict, origin) -> dict:
+    ox, oy, oz = origin
+    out = dict(part)
+    for key in ("p0", "p1", "center"):
+        if key in out:
+            x, y, z = out[key]
+            out[key] = [x - ox, y - oy, z - oz]
+    if "polygon" in out:
+        out["polygon"] = [[x - ox, y - oy] for x, y in out["polygon"]]
+        out["z0"] = out["z0"] - oz
+        out["z1"] = out["z1"] - oz
+    return out
+
+
+def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=None) -> dict:
     records = []
     for tank in tanks:
         lx, ly = tank.center_local
@@ -331,6 +421,7 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None) -> dict:
                 "spiral_stair": tank.spiral_stair,
                 "handrail_height": tank.handrail_height,
                 "sphere": _local_sphere(tank),
+                "extra_parts": [_local_part(p, tank.origin) for p in (tank.extra_parts or [])],
                 "epsg": tank.srs,
                 "rms_m": tank.rms,
             }
@@ -355,11 +446,20 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None) -> dict:
             ],
             "epsg": conn.srs,
         })
+    extra = []
+    for st in structures or []:
+        ox, oy, oz = st.origin
+        extra.append({
+            "id": st.name, "kind": st.kind, "parent": st.parent, "origin": list(st.origin),
+            "anchor_local": [st.anchor[0] - ox, st.anchor[1] - oy, st.anchor[2] - oz],
+            "parts": [_local_part(p, st.origin) for p in st.parts], "epsg": st.srs,
+        })
     return {
         "coordinate_mode": "local" if options.local_offset else "absolute",
         "segments": options.segments,
         "tanks": records,
         "connectors": links,
+        "structures": extra,
     }
 
 

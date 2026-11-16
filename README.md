@@ -120,6 +120,9 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 | `--merge` / `--no-merge` | 是否另存 `tanks_all.fbx` | 保存 |
 | `--no-blender` | 只检测、不导出 FBX | 关闭 |
 | `--limit-tiles` | 每块最多读多少个最细瓦片 | 不限 |
+| `--no-connectors` | 不找罐间走道 | 关闭 |
+| `--no-sphere-bracing` | 球罐支腿间不加 X 拉杆 | 关闭 |
+| `--no-structures` | 不检测附属结构（楼梯塔、罐顶平台 / 走道、罐壁盘梯 / 立管、球罐基础墩、管廊 / 管道） | 关闭 |
 
 `python -m tankextract --help` 的说明是中文。
 
@@ -137,11 +140,25 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
   | `Tank_001_base_ring` | 底圈 |
   | `Tank_001_stair` | 螺旋梯 |
   | `Tank_001_leg_01`… | 球罐支腿（每根一个对象） |
-  | `Tank_001_brace_01a` / `_01b`… | 球罐支腿间 X 形拉杆（每根一个对象） |
+  | `Tank_001_brace_01a` / `_01b`… | 球罐支腿间 X 形拉杆（每根一个对象，上下端高程实测） |
+  | `Tank_001_pedestal_01`… | 球罐支腿下的混凝土基础墩（实测高和平面尺寸） |
+  | `Tank_001_stair_treads` / `_stair_stringer_inner` / `_stair_stringer_outer` / `_stair_rail` / `_stair_rail_posts` / `_stair_landing` | 罐壁盘梯：踏步、内外侧梁、外侧扶手和中横杆、立柱、顶部平台（实测起止方位、高程、坡度、梯宽） |
+  | `Tank_001_platform` / `_platform_rail_top` / `_platform_rail_mid` / `_platform_rail_posts` | 罐顶中心平台和护栏（球罐顶平台、拱顶罐中心平台） |
+  | `Tank_001_roof_walkway_01` / `_roof_walkway_01_rail_L_top`… | 罐顶径向走道（从罐边盘梯口到中心平台，贴罐顶面）和两侧护栏 |
+  | `Tank_001_pipe_01`… | 沿罐壁（球罐沿支腿圈外）竖直下行的立管，实测直径 |
 
-- `tanks_all.fbx`：全部罐子（同样的层级）加全部罐间连接，合在一个文件里。
-- `connectors.fbx`：只含罐间连接。每处连接一个父级空物体 `Connector_001`（放在走道起点），下面是 `Connector_001_deck`（走道板）、`_rail_L_top` / `_rail_L_mid` / `_rail_R_top` / `_rail_R_mid`（两侧扶手和中横杆）、`_post_L_01`…（护栏立柱）、`_support_01`…（落地支撑 / 楼梯塔）；无护栏的窄连接按管道建为 `_pipe`。
-- `connectors.csv`、`connectors.geojson`：每处连接两端的绝对坐标和高程、长度、坡度、宽、板厚、护栏高、落地支撑（位置、平面尺寸、底 / 顶高程）。GeoJSON 里连接是三维 LineString，支撑是 Point。`connectors_debug.json` 记录每对相邻罐为什么有 / 没有连接。
+- 独立附属结构，每个一个父级空物体，部件是它下面的独立网格对象（都写在 `structures.fbx`，也合进 `tanks_all.fbx`）：
+
+  | 父级 | 部件 |
+  |---|---|
+  | `Stair_001`（楼梯塔，位置 = 塔底中心） | `_column_01`…`_04`（角柱）、`_beam_01`…（每层圈梁）、`_brace`（侧面斜撑）、`_flight_01`…（每跑梯段：踏步 + 两侧梁）、`_rail_flight_01_top/_mid/_posts`（梯段扶手）、`_landing_01`…（休息平台）、`_top_deck`、`_rail_top_top/_mid/_posts`（塔顶护栏，朝走道一侧开口）、`_bridge_01`（塔顶到走道的过桥板，有缝时） |
+  | `PipeRack_001`（管廊，位置 = 起点中线地面） | `_column_01A/B`…（每榀两根立柱）、`_crossbeam_t1`…（每层横梁）、`_longbeam_t1A/B`…（纵梁）、`_pipe_01`…（每根管道一个对象，实测直径和高程） |
+  | `Pipe_001`（单独的管道 / 管线，位置 = 起点地面） | `_pipe_01`、`_support_01`… |
+
+- `tanks_all.fbx`：全部罐子（同样的层级）加全部罐间连接和独立附属结构，合在一个文件里。
+- `connectors.fbx`：只含罐间连接。每处连接一个父级空物体 `Connector_001`（放在走道起点），下面是 `Connector_001_deck`（走道板）、`_rail_L_top` / `_rail_L_mid` / `_rail_R_top` / `_rail_R_mid`（两侧扶手和中横杆）、`_post_L_01`…（护栏立柱）、`_support_01`…（落地支撑）；被识别为楼梯塔的支撑不在这里重复，而是单独的 `Stair_###`。无护栏的窄连接按管道建为 `_pipe`。
+- `connectors.csv`、`connectors.geojson`：每处连接两端的绝对坐标和高程、长度、坡度、宽、板厚、护栏高（`handrail_source`：`measured` 实测，或 `assumed …` 网格太薄看不到护栏时取全场实测中位数；`rail_sides_seen` 记录看到护栏的是哪一侧）、落地支撑（位置、平面尺寸、底 / 顶高程，楼梯塔时带 `stair_tower` 名称）。GeoJSON 里连接是三维 LineString，支撑是 Point。`connectors_debug.json` 记录每对相邻罐为什么有 / 没有连接。
+- `structures.csv`、`structures.geojson`：每个附属结构一行 / 一个要素：楼梯塔（平面框、层高、各层高程）、管廊（轴线、长宽、各层高程、榀数和间距、每根管的直径 / 高程 / 横向位置 / 长度）、单独管道、罐壁立管、罐壁盘梯、罐顶平台、罐顶走道、球罐基础墩。`dims` 列是完整的实测参数（JSON）。`structures_stats.json` 是每块的计数。
 - `tanks.geojson`、`tanks.csv`：每个罐的绝对坐标和尺寸。CSV 带 UTF-8 BOM，方便用 Excel 打开。
 - `tanks.prj`：SRS 为 `EPSG:4534`–`EPSG:4554`（CGCS2000 三度带）时写 WKT，例如 EPSG:4548 为中央子午线 117°E。其它 SRS 原样写入。
 - `srs_origin.json`、`tanks_spec.json`：原点、坐标系，以及交给 Blender 的参数。
@@ -150,7 +167,7 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 
 FBX 自定义属性（字符串，避免再被截成单精度）：`epsg`、`srs_origin_x/y/z`、`coordinate_mode`、`radius_m`、`wall_height_m`、`roof_type`、`rms_m`。
 
-CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_height_m、total_height_m、roof_type（`flat` 平顶 / `cone` 锥顶 / `dome` 球冠拱顶 / `sphere` 球罐）、roof_rise_m、rms_m、coverage_deg，以及顶圈、抗风圈、底圈、螺旋梯（能稳定看出来时），handrail_height_m（护栏高）、sphere_center_z、sphere_leg_count、sphere_leg_diameter_m、sphere_leg_rho_m（支腿中心到球心的水平距离）、sphere_leg_height_m、sphere_leg_azimuth_deg（各支腿方位角，正东起逆时针）、sphere_bracing（球罐）。
+CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_height_m、total_height_m、roof_type（`flat` 平顶 / `cone` 锥顶 / `dome` 球冠拱顶 / `sphere` 球罐）、roof_rise_m、rms_m、coverage_deg，以及顶圈、抗风圈、底圈、螺旋梯（能稳定看出来时），handrail_height_m（护栏高）、sphere_center_z、sphere_leg_count、sphere_leg_diameter_m、sphere_leg_rho_m（支腿中心到球心的水平距离）、sphere_leg_height_m、sphere_leg_azimuth_deg（各支腿方位角，正东起逆时针）、sphere_bracing（球罐），以及 sphere_leg_diameter_v5_m（旧版直径，供对比）、sphere_pedestal_height_m / _size_m、sphere_brace_z0 / z1、roof_platform_z / _radius_m / _rail_m、roof_walkways（JSON）、wall_stair_*（起止方位、高程、梯宽、坡度、转角、是否外推）、wall_pipe_count、wall_pipes（JSON）。
 
 ## 检测在做什么
 
@@ -162,8 +179,14 @@ CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_he
 6. 球罐：若筒壁以上的表面大部分落在以筒壁半径为半径的球面上、并接近球顶，判为球罐（`roof_type=sphere`），输出球心高程、球半径和支柱（按支柱处竖直面的方位直方图计数），白模为球体加支柱。顶圈要伸出筒壁才记录；抗风圈是筒壁外侧、沿圆周一圈的窄环；底圈在底部；螺旋梯是筒外一条随高度转动的窄带。
 
 7. 罐间连接：对每一对相邻（罐壁间距 ≤ 30 m、中间没有别的罐）的罐，在两罐圆心连线两侧 ±3 m 的走廊里、罐顶高度附近找连续的朝上面：要覆盖两罐之间至少 75% 的长度。走道板高程用“覆盖站点最多的直线”求（允许坡度，能分开走道板和它上面的管子、下面的楼梯平台），再沿轴线向罐顶延伸到走道板落到罐顶面上为止（球罐的走道一直通到顶部平台）。走道两端都不能比各自罐檐低 0.5 m 以上（只认罐顶到罐顶），罐之间更低处的管廊、侧平台不算。宽度取走道板面的横向范围，板厚取板面到板底朝下面的距离，护栏取两侧边缘 0.3–1.6 m 高的面，落地支撑 / 楼梯塔取走道下方从地面一直连到板底的竖直面。窄而无护栏的按管道（直径 = 宽度）输出。
-8. 球罐支腿：按方位直方图找峰，再按等间距校正（支腿总是均布的）；每根支腿在离地 1–4 m 处拟合圆得到直径和位置，支腿从地面到球心高程（赤道）。照片模型里拉杆太细，量不出来；默认在相邻支腿之间加 X 形拉杆（Ø0.1 m，从离地 0.8 m 到支腿与球壳相交处下 0.5 m），`--no-sphere-bracing` 可关掉。
-
+8. 球罐支腿：按方位直方图找峰，再按等间距校正（支腿总是均布的）。
+9. 附属结构（`structures.py`，对所有块通用，不针对某个厂区）：
+   - 楼梯塔：罐间走道下方的落地支撑若平面 ≥ 1.5 m、高 ≥ 4 m，就在它周围取面片：竖直面的稳健最小外接矩形给出平面尺寸和朝向；框内朝上面的面积直方图峰值就是各层休息平台，按中位层高规整（缺测的层按层高补）。白模为四根角柱、每层圈梁、侧面斜撑、往返梯段（每跑一层，沿长边、各占半宽）、两端休息平台、梯段扶手、塔顶平台和护栏（朝走道一侧开口，有缝时加过桥板）。
+   - 罐壁盘梯：罐壁外 0.15–1.8 m 的朝上面（踏步），在展开图（弧长 s, z）上做直线 Hough（坡度 19°–51°，两个旋向），取最长的连续段；网格太稀疏只看到一段时沿同一坡度外推到地面或罐顶（`wall_stair_extended` 标出）。
+   - 罐壁立管：罐壁外 0.05–1.0 m（球罐为支腿圈外）的竖直面，展开图上竖向覆盖 ≥ 55% 的窄列（< 1 m 宽）就是立管；直径用水平切片 RANSAC 圆（要看到 ≥ 210° 的轮廓）取中位数。避开盘梯和支腿所在方位。
+   - 罐顶平台和走道：球罐取球顶以上最集中的朝上面高程为平台面，半径取平台面仍覆盖 60% 方位的最大半径；拱顶罐先按半径分环量出罐顶实际剖面，高出罐顶 0.25–1.8 m 的面在中心 2.5 m 内的是中心平台，在某个方位上覆盖大部分半径的是径向走道（方位、偏距、宽度、护栏高实测），走道板贴着实测罐顶剖面。小罐（平台半径 > 0.35 R）不建平台。
+   - 球罐基础墩、支腿、拉杆：每根支腿离地 1.6–7 m 每 0.5 m 一层做 RANSAC 圆，直径取中位数（旧版用全部点拟合，被拉杆、管线拉大了约 0.4 m）；支腿脚下朝上面的高程是墩顶，墩下竖直面的径向 / 切向范围是墩的平面尺寸；拉杆在每两根相邻支腿间的竖直面内搜索最好的一对上下端高程（X 形两根对称），十个面一起投票。
+   - 管廊和管道：按厂区主方向（竖直面法线方位直方图）旋转，地面以上 1.6–14 m、不属于罐 / 楼梯塔 / 走道的面在平面上栅格化，沿两个主方向找 ≥ 8 m 的连续条带。每条带：截面上用面法线做圆 Hough（每个面片按自己的法线给“圆心 = 点 − r·法线”投票，管道互不相交，贪心取票数最高的圆），要求看到 ≥ 150° 的轮廓、覆盖 ≥ 40% 长度；各层高程取朝上面平面覆盖率的峰值；榀位取条带边缘从地面一直连到最低层的竖直面。高于地面 10 m 的不算管廊；两侧立面连续（建筑墙）或屋面满铺且没有管道的按建筑剔除。截面上一根管都看不到的条带（棚架、设备框架）不建。宽 < 1 m 的按单独管道（`Pipe_###`，管子放在单柱支墩上，不建两柱框架）。大罐（平台到罐边 ≥ 3 m）才找径向走道。
 合成场景上半径和高程的误差大约是几毫米到两厘米，RMS 约 6–18 mm。详见 `validation_report.md`。
 
 每次运行还会写 `candidates.csv`：所有候选圆柱、保留与否和原因（rms、coverage、height、elevated base、slender、内部有几何、筒壁不连续），以及屋顶径向剖面，方便核对漏检和误检。
@@ -178,8 +201,11 @@ CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_he
 - 内置解析器不覆盖 OSG 的全部类。没有 binary bracket 的文件若出现未实现的类，该瓦片会失败并尝试 osgconv。inline schema（attribute bit 0x2）直接拒绝。
 - 一个 zip 视为一个块、一个原点。跨两个块的罐不会被拼成一个。
 - 球罐按上半球拟合；下半球常被照片模型糊成竖直“裙边”，不参与球半径拟合。半径小于 2 m 的立式小容器默认不收（`--min-radius 1.5` 可放开，但会混进立管、阀门井等）。
-- 罐间连接只找“罐顶到罐顶”的走道 / 管道。地面管廊、罐到楼梯塔或建筑的走道、沿罐壁下行的管线不建模。球罐顶部的圆形平台、楼梯塔内部的梯段不细分，楼梯塔按实测平面尺寸做成实心方柱。
-- 球罐支腿直径从照片模型量，网格会把细柱子“吹胖”，可能偏大约 0.1 m；支腿下的混凝土墩不建模。
+- 罐间连接只找“罐顶到罐顶”的走道 / 管道。罐到建筑的走道不建模。
+- 楼梯塔的梯段布置（往返、每层一跑、沿长边）和侧面斜撑形式是按常规钢梯塔给的，层高、平台高程、平面尺寸是实测的；照片模型分辨不出单根踏步和斜撑方向。
+- 管廊：管道是直的、和管廊等长的一段（按实测起止位置），弯头、立管接驳、阀门不建；截面上被遮挡的管、贴在一起的小管可能漏掉或合成一根；角撑（斜撑）不建；榀位看不清的管廊按 6 m 等距（`bents_source` 标出）。
+- 不在管廊上、自由走向的管线（例如球罐顶部沿球面下行再拐到管廊的管子）不追踪，只建竖直段（`Tank_###_pipe_##`）。
+- 球罐的水喷淋环管、罐顶小附件（呼吸阀、人孔、量油孔）不建模。
 - 带高穹顶、外有平台管线的罐，照片模型的筒壁本身有 ±0.2 m 的起伏，半径和壁高的不确定度相应变大。
 
 ## 测试

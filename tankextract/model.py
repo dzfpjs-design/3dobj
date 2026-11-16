@@ -30,6 +30,10 @@ class Tank:
     # Spherical tank: {"center_z", "radius", "legs": [azimuth deg], "leg_rho", "leg_radius"}.
     sphere: dict | None = None
     name: str = ""
+    # Measured ancillary structures attached to this tank (wall stair, wall pipes, roof
+    # platform / walkways, sphere pedestals + bracing) and their primitive parts.
+    accessories: dict = field(default_factory=dict)
+    extra_parts: list = field(default_factory=list)
 
     @property
     def center_local(self) -> tuple[float, float]:
@@ -85,4 +89,43 @@ class Tank:
                 ";".join(f"{a:.1f}" for a in self.sphere.get("legs", [])) if self.sphere else ""
             ),
             "sphere_bracing": (self.sphere or {}).get("bracing", "") if self.sphere else "",
+            **_accessory_columns(self),
         }
+
+
+def _fmt(v, nd=3):
+    return "" if v is None else round(float(v), nd)
+
+
+def _accessory_columns(tank: "Tank") -> dict:
+    import json
+
+    acc = tank.accessories or {}
+    sup = acc.get("sphere_supports", {})
+    ped = sup.get("pedestal") or {}
+    roof = acc.get("roof") or {}
+    pf = roof.get("platform") or {}
+    st = acc.get("wall_stair") or {}
+    pipes = acc.get("wall_pipes") or []
+    return {
+        "sphere_leg_diameter_v5_m": _fmt((tank.sphere or {}).get("leg_diameter_v5")) if tank.sphere else "",
+        "sphere_pedestal_height_m": _fmt(ped.get("height")),
+        "sphere_pedestal_size_m": f"{ped['size_radial']:.2f}x{ped['size_tangential']:.2f}" if ped else "",
+        "sphere_brace_z0": _fmt(sup.get("brace_z0")),
+        "sphere_brace_z1": _fmt(sup.get("brace_z1")),
+        "roof_platform_z": _fmt(pf.get("z")),
+        "roof_platform_radius_m": _fmt(pf.get("radius")),
+        "roof_platform_rail_m": _fmt(pf.get("rail_height")),
+        "roof_walkways": json.dumps([{k: round(v, 3) if isinstance(v, float) else v for k, v in w.items()} for w in roof.get("walkways", [])]) if roof.get("walkways") else "",
+        "wall_stair": bool(st),
+        "wall_stair_az_bottom_deg": _fmt(st.get("az_bottom_deg"), 1),
+        "wall_stair_az_top_deg": _fmt(st.get("az_top_deg"), 1),
+        "wall_stair_z_bottom": _fmt(st.get("z_bottom")),
+        "wall_stair_z_top": _fmt(st.get("z_top")),
+        "wall_stair_width_m": _fmt(st.get("width")),
+        "wall_stair_slope_deg": _fmt(st.get("slope_deg"), 1),
+        "wall_stair_sweep_deg": _fmt(st.get("sweep_deg"), 1),
+        "wall_stair_extended": ";".join(st.get("extended", [])) if st else "",
+        "wall_pipe_count": len(pipes),
+        "wall_pipes": json.dumps([{k: round(v, 3) if isinstance(v, float) else v for k, v in q.items()} for q in pipes]) if pipes else "",
+    }
