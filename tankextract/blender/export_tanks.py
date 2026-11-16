@@ -171,7 +171,10 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
                     pieces.append((f"brace_{index + 1:02d}b", *_rod((x0, y0, hi), (x1, y1, lo), 0.05, 8)))
         pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"]))
         return _finish(pieces, tank, mode, material, tank["id"], (cx, cy, z0))
-    pieces.append(("body", *_cylinder(cx, cy, z0, z1, radius, segments)))
+    roof = tank.get("roof_type", "flat")
+    rise = float(tank.get("roof_rise") or 0.0)
+    # One closed, manifold shell: bottom plate + wall + roof share their rim vertices.
+    pieces.append(("body", *_closed_body(cx, cy, z0, z1, radius, roof, rise, segments)))
     handrail = tank.get("handrail_height")
     if handrail:
         # Lifted 2 cm off the wall top so its bottom does not z-fight with
@@ -179,14 +182,6 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
         pieces.append(
             ("handrail", *_band(cx, cy, z1 + 0.02, float(handrail) - 0.02, radius - 0.06, radius, segments))
         )
-    roof = tank.get("roof_type", "flat")
-    rise = float(tank.get("roof_rise") or 0.0)
-    if roof == "cone" and rise > 0:
-        pieces.append(("body", *_cone(cx, cy, z1, radius, rise, segments)))
-    elif roof == "dome" and rise > 0:
-        pieces.append(("body", *_dome(cx, cy, z1, radius, rise, segments)))
-    else:
-        pieces.append(("body", *_disk(cx, cy, z1, radius * 0.998, segments)))
     rim = tank.get("top_rim_width")
     if rim:
         pieces.append(
@@ -540,6 +535,55 @@ def _cylinder(cx, cy, z0, z1, radius, segs, caps=False):
         faces.append(tuple(range(segs - 1, -1, -1)))
         faces.append(tuple(range(segs, 2 * segs)))
     return verts, faces
+
+
+def _roof_profile(z1, radius, roof, rise, rings=12):
+    """(rho, z) points of the roof from the wall top (excluded) to the centre (included)."""
+    if roof == "cone" and rise > 0:
+        return [(0.0, z1 + rise)]
+    if roof == "dome" and rise > 0:
+        rs = (radius * radius + rise * rise) / (2.0 * rise)
+        pts = []
+        for i in range(1, rings):
+            rho = radius * (1.0 - i / rings)
+            pts.append((rho, z1 + math.sqrt(max(rs * rs - rho * rho, 0.0)) - (rs - rise)))
+        return pts + [(0.0, z1 + rise)]
+    return [(0.0, z1)]
+
+
+def _revolve(cx, cy, profile, segs):
+    """Closed surface of revolution. ``profile`` runs from the bottom centre (rho=0) round the
+    outside to the top centre (rho=0); points with rho=0 become single pole vertices, so the
+    result is a watertight, consistently outward-facing mesh."""
+    verts, rings = [], []
+    for rho, z in profile:
+        if rho <= 1e-9:
+            rings.append([len(verts)] * segs)
+            verts.append((cx, cy, z))
+        else:
+            ring = []
+            for k in range(segs):
+                a = 2 * math.pi * k / segs
+                ring.append(len(verts))
+                verts.append((cx + rho * math.cos(a), cy + rho * math.sin(a), z))
+            rings.append(ring)
+    faces = []
+    for lo, hi in zip(rings[:-1], rings[1:]):
+        for k in range(segs):
+            nxt = (k + 1) % segs
+            quad = [lo[k], lo[nxt], hi[nxt], hi[k]]
+            face = []
+            for v in quad:
+                if v not in face:
+                    face.append(v)
+            if len(face) >= 3:
+                faces.append(tuple(face))
+    return verts, faces
+
+
+def _closed_body(cx, cy, z0, z1, radius, roof, rise, segs):
+    profile = [(0.0, z0), (radius, z0), (radius, z1)] + _roof_profile(z1, radius, roof, rise)
+    return _revolve(cx, cy, profile, segs)
 
 
 def _disk(cx, cy, z, radius, segs):

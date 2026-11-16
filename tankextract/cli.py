@@ -11,7 +11,7 @@ from tankextract.pipeline import RunOptions, run
 from tankextract.tools import library_hint, resolve_blender
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tankextract",
         description=(
@@ -80,11 +80,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-sphere-bracing", action="store_true", help="球罐支腿之间不加 X 形拉杆")
     parser.add_argument(
         "--no-structures", action="store_true",
-        help="不检测附属结构（楼梯塔、罐顶平台/走道、罐壁盘梯/立管、球罐基础墩、管廊/管道）",
+        help="不检测附属结构（楼梯塔、罐顶平台/走道、罐壁盘梯、球罐基础墩）",
+    )
+    parser.add_argument(
+        "--pipes", action="store_true",
+        help="同时建管道：罐壁立管、单独管线、管廊（默认不建，管道另行用激光扫描数据建模）",
     )
     parser.add_argument("--limit-tiles", type=int, default=None, help="每个块最多读取的最细瓦片数（调试用）")
     parser.add_argument("--self-test", action="store_true", help="生成合成场景并跑通全流程，用于没有真实数据时的自检")
     parser.add_argument("--version", action="version", version=f"tankextract {__version__}")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.self_test:
@@ -126,6 +135,7 @@ def _options_from_args(args) -> RunOptions:
         connectors=not args.no_connectors,
         sphere_bracing=not args.no_sphere_bracing,
         structures=not args.no_structures,
+        pipes=args.pipes,
     )
 
 

@@ -1134,7 +1134,7 @@ def _deck_side(tower: dict, conn) -> tuple[int, dict | None]:
     return k, bridge
 
 
-def detect_structures(tanks, connectors, F: np.ndarray, log=print) -> tuple[list[Structure], dict]:
+def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool = False) -> tuple[list[Structure], dict]:
     """All ancillary structures of a block.  Tank-attached parts go to ``tank.extra_parts`` and
     measurements to ``tank.accessories``; free-standing ones are returned as Structures."""
     stats = {"faces": int(len(F))}
@@ -1221,14 +1221,21 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print) -> tuple[list
             a0, sw = st["az_bottom_deg"], st["sweep_deg"] * (1 if st["direction"] == "ccw" else -1)
             for f in np.linspace(0, 1, 12):
                 ex.append(((a0 + sw * f) % 360, 4.0))
-        pipes = wall_pipes(F, tank, ex)
-        if pipes:
-            acc["wall_pipes"] = pipes
-            for i, p in enumerate(pipes, start=1):
+        wp = wall_pipes(F, tank, ex) if pipes else []
+        if wp:
+            acc["wall_pipes"] = wp
+            for i, p in enumerate(wp, start=1):
                 parts.append(rod(f"{name}_pipe_{i:02d}", (p["x"], p["y"], p["z0"]), (p["x"], p["y"], p["z1"]), p["diameter"] / 2))
         tank.accessories = acc
         tank.extra_parts = parts
     F = full
+    if not pipes:
+        # pipes and pipe racks are off by default (modelled separately, e.g. from laser scans)
+        stats["pipe_racks"] = stats["pipe_runs"] = stats["wall_pipes"] = 0
+        stats["wall_stairs"] = sum(1 for t in tanks if getattr(t, "accessories", {}).get("wall_stair"))
+        stats["roof_platforms"] = sum(1 for t in tanks if getattr(t, "accessories", {}).get("roof", {}).get("platform"))
+        stats["roof_walkways"] = sum(len(getattr(t, "accessories", {}).get("roof", {}).get("walkways", [])) for t in tanks)
+        return found, stats
     # 3) pipe racks and pipe runs on sleepers / supports
     excl = [(t["x"], t["y"], t["length"] + 1.0, t["width"] + 1.0, t["axis_deg"]) for t, _c, _s in towers]
     for conn in connectors:

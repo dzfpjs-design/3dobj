@@ -44,7 +44,8 @@ class RunOptions:
     limit_tiles: int | None = None
     connectors: bool = True
     sphere_bracing: bool = True
-    structures: bool = True  # stair towers, roof platforms, wall stairs/pipes, pipe racks
+    structures: bool = True  # stair towers, roof platforms / walkways, wall stairs, sphere pedestals
+    pipes: bool = False  # wall pipes, pipe runs and pipe racks (off by default)
 
 
 def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
@@ -96,7 +97,7 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
         conn.name = f"Connector_{index:03d}"
     _assume_missing_rails(connectors, log)
     if options.structures and tanks:
-        structures.extend(_detect_structures_all(tanks, connectors, log, struct_stats))
+        structures.extend(_detect_structures_all(tanks, connectors, log, struct_stats, pipes=options.pipes))
     output.mkdir(parents=True, exist_ok=True)
     mode = "local" if options.local_offset else "absolute"
     write_sidecars(tanks, output, mode)
@@ -193,6 +194,8 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
         debug=debug,
     )
     links = find_connectors(found, tiles, accumulator.ground_near, conn_debug) if options.connectors else []
+    if not options.pipes:
+        links = [c for c in links if c.kind != "pipe"]  # roof-to-roof pipes are left to the pipe model
     if links:
         log(f"  {block.label}: 罐间连接 {len(links)} 处")
     faces = None
@@ -218,7 +221,7 @@ def _assume_missing_rails(connectors, log) -> None:
             log(f"  {conn.name}: 护栏在网格中不可见，按全场中位数 {median:.2f} m 补全")
 
 
-def _detect_structures_all(tanks, connectors, log, struct_stats) -> list:
+def _detect_structures_all(tanks, connectors, log, struct_stats, pipes: bool = False) -> list:
     out = []
     groups: dict[int, list] = {}
     for tank in tanks:
@@ -227,7 +230,7 @@ def _detect_structures_all(tanks, connectors, log, struct_stats) -> list:
             groups.setdefault(id(faces), [faces, []])[1].append(tank)
     for faces, group in groups.values():
         links = [c for c in connectors if c.tank_refs and c.tank_refs[0] in group]
-        found, sstats = detect_structures(group, links, faces, log)
+        found, sstats = detect_structures(group, links, faces, log, pipes=pipes)
         block = group[0].block
         for st in found:
             st.block, st.srs, st.origin = block, group[0].srs, tuple(group[0].origin)
