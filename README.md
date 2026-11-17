@@ -14,9 +14,10 @@ mkdir -p "$HOME/3dobj_env"
 curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest \
   | tar -C "$HOME/3dobj_env" -xvj bin/micromamba
 
-# 2. conda-forge 的 OpenSceneGraph 3.6.5 + Python 3.11 + numpy
+# 2. conda-forge 的 OpenSceneGraph 3.6.5 + Python 3.11 + numpy + scipy + pillow
+#    （树冠过滤用 Pillow 解码瓦片里的 JPEG；已有环境执行下面的 pip install 也会装上）
 "$HOME/3dobj_env/bin/micromamba" create -y -p "$HOME/3dobj_env/osg" -c conda-forge \
-  python=3.11 numpy scipy "openscenegraph=3.6.5"
+  python=3.11 numpy scipy pillow "openscenegraph=3.6.5"
 
 # 3. 本工具（装进同一个环境，不需要系统 pip）
 cd /path/to/3dobj
