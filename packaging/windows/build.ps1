@@ -27,7 +27,7 @@ $downloaded = $false
 foreach ($url in $urls) {
     Write-Host "GET $url"
     try {
-        curl.exe -fL --retry 3 --retry-delay 2 -o $zipPath $url
+        curl.exe -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 900 -o $zipPath $url
         if ($LASTEXITCODE -eq 0 -and (Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 50MB)) {
             $downloaded = $true
             break

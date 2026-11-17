@@ -17,8 +17,9 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=no
 OutputDir=..\..\dist\installer
 OutputBaseFilename=TankExtract-Setup-{#MyAppVersion}
-Compression=lzma2
-SolidCompression=yes
+; zip is much faster to build on a GitHub runner than solid lzma of the Blender tree.
+Compression=zip
+SolidCompression=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
