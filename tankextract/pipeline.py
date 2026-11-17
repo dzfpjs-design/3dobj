@@ -18,6 +18,7 @@ from tankextract.connectors import find_connectors
 from tankextract.grounding import ground_only
 from tankextract.structures import collect_faces, detect_structures, tank_boxes
 from tankextract.sidecar import write_connectors, write_ground_report, write_sidecars, write_structures
+from tankextract.treefilter import TreeFilterConfig, colour_stats, judge, sample_colours
 from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv
 
 _LEVEL_RE = re.compile(r"_L(\d+)(?:_|\.)", re.IGNORECASE)
@@ -49,6 +50,7 @@ class RunOptions:
     pipes: bool = False  # wall pipes, pipe runs and pipe racks (off by default)
     grounding: bool = True  # snap bottoms to the measured ground / foundation top, model foundations
     exclude: tuple[str, ...] = ()  # tank IDs (e.g. Tank_007) checked by eye and dropped; other IDs are kept
+    tree_filter: bool = True  # drop tree crowns (foliage-green texture + irregular geometry), offline
 
 
 def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
@@ -98,6 +100,9 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     connectors.sort(key=lambda c: (c.block, c.tank_a, c.tank_b))
     for index, conn in enumerate(connectors, start=1):
         conn.name = f"Connector_{index:03d}"
+    tree_rows: list[dict] = []
+    if options.tree_filter:
+        tanks, connectors, structures = _apply_tree_filter(tanks, connectors, structures, tree_rows, log)
     if options.exclude:
         # Drop tanks rejected on review (trees, etc.) after numbering, so every other tank and
         # connector keeps the ID it had in the full run; their foundations, stairs and other
@@ -132,6 +137,8 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
         json.dumps(conn_debug, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
     )
     _write_candidate_report(debug, tanks, output)
+    if options.tree_filter:
+        _write_tree_report(tree_rows, output)
     spec_path = output / "tanks_spec.json"
     spec_path.write_text(
         json.dumps(_spec(tanks, options, connectors, structures), ensure_ascii=False, indent=1),
@@ -238,7 +245,116 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
         log(f"  {block.label}: 附属结构检测用面片 {len(faces)}")
     for tank in found:
         tank._faces = faces  # released after structure detection
+    if options.tree_filter and found:
+        _measure_colours(block, found, accumulator, options, osgconv, stats, log)
     return found, links, [], {}
+
+
+def _measure_colours(block: Block, tanks: list[Tank], accumulator, options: RunOptions, osgconv, stats, log) -> None:
+    """Texture colour inside each kept cylinder, from the textures embedded in the tiles.
+
+    Re-reads only the finest tiles that overlap a kept tank, with textures, using the
+    built-in reader (osgconv output carries no textures; those tanks fall back to the
+    geometry-only tree test).
+    """
+    hits: dict[str, list] = {}
+    for name, box in accumulator.tile_boxes:  # one box per mesh of every finest tile
+        for t in tanks:
+            if (box[0, 0] - t.radius - 1 < t.center_x < box[1, 0] + t.radius + 1
+                    and box[0, 1] - t.radius - 1 < t.center_y < box[1, 1] + t.radius + 1):
+                lst = hits.setdefault(name, [])
+                if t not in lst:
+                    lst.append(t)
+    cache: dict = {}
+    per_tank: dict[int, list] = {id(t): [] for t in tanks}
+    names = list(hits)
+    textured = 0
+    for name in names:
+        try:
+            contents, _used = _read_tile(block, name, "python", None, textures=True)
+        except Exception:  # noqa: BLE001 - texture pass is best effort, never fatal
+            continue
+        meshes = []
+        for mesh in contents.meshes:
+            if mesh.uv is None or mesh.image is None:
+                continue
+            absolute = np.array(mesh.vertices, dtype=np.float64, copy=True)
+            absolute += np.asarray(block.origin, dtype=np.float64)
+            meshes.append((absolute, mesh.triangles, mesh.uv, mesh.image))
+        if not meshes:
+            continue
+        textured += 1
+        for t in hits[name]:
+            top = t.z_base + max(t.total_height, t.wall_height) + 1.0
+            rgb = sample_colours(meshes, t.center_x, t.center_y, t.radius, t.z_base + 0.3, top, cache)
+            if len(rgb):
+                per_tank[id(t)].append(rgb)
+        cache.clear()  # decoded textures are per tile
+    for t in tanks:
+        chunks = per_tank[id(t)]
+        rgb = np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 3), dtype=np.uint8)
+        t.tree_check["colour"] = colour_stats(rgb)
+    log(f"  {block.label}: 罐体纹理颜色检查（树冠过滤）读取带纹理瓦片 {textured}/{len(names)}")
+
+
+def _apply_tree_filter(tanks, connectors, structures, rows: list, log, config: TreeFilterConfig | None = None):
+    """Drop tree crowns after numbering, so every real tank keeps the ID it has in a full run."""
+    config = config or TreeFilterConfig()
+    drop = set()
+    for tank in tanks:
+        geom = tank.tree_check.get("geometry", {})
+        colour = tank.tree_check.get("colour")
+        if geom.get("sphere"):
+            is_tree, reason = False, ""
+        else:
+            is_tree, reason = judge(geom, colour, tank.radius, config)
+        tank.tree_check["tree"] = is_tree
+        tank.tree_check["reason"] = reason
+        colour = colour or {}
+        rows.append({
+            "block": tank.block, "tank_id": tank.name, "X": tank.center_x, "Y": tank.center_y,
+            "radius_m": tank.radius, "tree": is_tree,
+            "green_fraction": colour.get("green_fraction"), "texture_samples": colour.get("samples", 0),
+            "mean_rgb": colour.get("mean_rgb"),
+            "wall_rms_m": geom.get("rms"), "wall_fill": geom.get("wall_fill"), "roof_rms_m": geom.get("roof_rms"),
+            "reason": reason,
+        })
+        if is_tree:
+            drop.add(tank.name)
+    if not drop:
+        log("  树冠过滤：未发现树冠")
+        return tanks, connectors, structures
+    for tank in tanks:
+        if tank.name in drop:
+            log(f"  树冠过滤：剔除 {tank.block} {tank.name} ({tank.center_x:.2f}, {tank.center_y:.2f}) r={tank.radius:.2f}m — {tank.tree_check['reason']}")
+    tanks = [t for t in tanks if t.name not in drop]
+    connectors = [c for c in connectors if c.tank_a not in drop and c.tank_b not in drop]
+    structures = [st for st in structures if getattr(st, "parent", None) not in drop]
+    log(f"  树冠过滤：共剔除 {len(drop)} 个（可用 --no-tree-filter 关闭）")
+    return tanks, connectors, structures
+
+
+def _write_tree_report(rows: list[dict], output: Path) -> None:
+    """tree_filter_report.csv: colour / geometry cues of every detected cylinder and the verdict."""
+    import csv
+
+    fields = ["block", "tank_id", "X", "Y", "radius_m", "tree", "green_fraction", "texture_samples", "mean_rgb",
+              "wall_rms_m", "wall_fill", "roof_rms_m", "reason"]
+    output.mkdir(parents=True, exist_ok=True)
+
+    def fmt(v, nd):
+        return "" if v is None else f"{v:.{nd}f}"
+
+    with open(output / "tree_filter_report.csv", "w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(fields)
+        for r in sorted(rows, key=lambda r: (not r["tree"], r["block"], r["tank_id"])):
+            writer.writerow([
+                r["block"], r["tank_id"], fmt(r["X"], 3), fmt(r["Y"], 3), fmt(r["radius_m"], 3), r["tree"],
+                fmt(r["green_fraction"], 3), r["texture_samples"],
+                " ".join(str(c) for c in r["mean_rgb"]) if r["mean_rgb"] else "",
+                fmt(r["wall_rms_m"], 4), fmt(r["wall_fill"], 2), fmt(r["roof_rms_m"], 4), r["reason"],
+            ])
 
 
 def _assume_missing_rails(connectors, log) -> None:
@@ -325,10 +441,13 @@ def _write_candidate_report(debug: list[dict], tanks: list[Tank], output: Path) 
         writer.writerow(fields)
         for rec in debug:
             tank = rec.get("tank")
+            kept, reason = rec["kept"], rec["reason"]
+            if tank is not None and tank.tree_check.get("tree"):
+                kept, reason = False, "tree crown: " + tank.tree_check.get("reason", "")
             writer.writerow([
                 names.get(id(tank), "") if tank is not None else "",
-                rec["kept"],
-                rec["reason"],
+                kept,
+                reason,
                 f"{rec['cx']:.3f}",
                 f"{rec['cy']:.3f}",
                 f"{rec.get('fit_radius', rec['radius']):.3f}",
@@ -371,10 +490,11 @@ def _skip_tile(stats: dict, name: str, exc: Exception, log) -> None:
         log(f"  警告：瓦片无法读取，已跳过 {name}: {str(exc)[-160:]}")
 
 
-def _read_tile(block: Block, name: str, reader: str, osgconv: str | None):
+def _read_tile(block: Block, name: str, reader: str, osgconv: str | None, textures: bool = False):
     data = block.read_bytes(name)
     try:
-        return load_osgb_bytes(data, reader=reader, osgconv=osgconv, filename=posixpath.basename(name))
+        return load_osgb_bytes(data, reader=reader, osgconv=osgconv, filename=posixpath.basename(name),
+                               textures=textures)
     except OsgbError as exc:
         raise OsgbError(f"{name}: {exc}") from exc
 

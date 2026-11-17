@@ -94,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--exclude", action="append", default=[], metavar="Tank_###[,Tank_###]",
         help="剔除人工核查后不是罐的检测结果（如树），按完整运行时的编号；其余罐、走道保持原编号。可重复",
     )
+    parser.add_argument(
+        "--no-tree-filter", action="store_true",
+        help="关闭树冠过滤。默认开启：纹理以植被绿色为主且罐壁/罐顶几何不规整的圆柱判为树冠并剔除，"
+             "理由写入 tree_filter_report.csv（完全离线，不用任何在线服务）",
+    )
     parser.add_argument("--limit-tiles", type=int, default=None, help="每个块最多读取的最细瓦片数（调试用）")
     parser.add_argument("--self-test", action="store_true", help="生成合成场景并跑通全流程，用于没有真实数据时的自检")
     parser.add_argument("--version", action="version", version=f"tankextract {__version__}")
@@ -145,6 +150,7 @@ def _options_from_args(args) -> RunOptions:
         structures=not args.no_structures,
         pipes=args.pipes,
         grounding=not args.no_grounding,
+        tree_filter=not args.no_tree_filter,
         exclude=tuple(n for item in args.exclude for n in item.split(",") if n.strip()),
     )
 

@@ -122,6 +122,10 @@ class Mesh:
     vertices: np.ndarray  # (N, 3) float64, local metres
     triangles: np.ndarray  # (M, 3) int32
     final: bool = False
+    # Only filled when the tile is read with ``textures=True``: per-vertex texture
+    # coordinates (N, 2) and the encoded texture file (JPEG/PNG bytes) they index.
+    uv: np.ndarray | None = None
+    image: bytes | None = None
 
 
 @dataclass
@@ -153,8 +157,11 @@ class OsgbContents:
         return Mesh(np.vstack(verts), np.vstack(tris))
 
 
-def read_osgb_bytes(data: bytes) -> OsgbContents:
+def read_osgb_bytes(data: bytes, textures: bool = False) -> OsgbContents:
+    """Parse one OSGB blob. With ``textures`` each mesh also keeps its texture
+    coordinates and the embedded texture image bytes (used for colour checks)."""
     reader = _Reader(data)
+    reader.textures = textures
     reader.parse()
     return OsgbContents(
         version=reader.version,
@@ -166,9 +173,9 @@ def read_osgb_bytes(data: bytes) -> OsgbContents:
     )
 
 
-def read_osgb_file(path: str) -> OsgbContents:
+def read_osgb_file(path: str, textures: bool = False) -> OsgbContents:
     with open(path, "rb") as handle:
-        return read_osgb_bytes(handle.read())
+        return read_osgb_bytes(handle.read(), textures=textures)
 
 
 class _Reader:
@@ -189,6 +196,11 @@ class _Reader:
         self._prim_mode = 0
         self._pending_matrix: np.ndarray | None = None
         self._pending_rf = 0
+        self.textures = False
+        # Last embedded texture seen. Photogrammetry tiles put the StateSet (with its
+        # Texture2D / Image) before the Geometry arrays it textures.
+        self.current_image: bytes | None = None
+        self._texcoords: np.ndarray | None = None
 
     # --- scalars ---------------------------------------------------------
 
@@ -360,7 +372,9 @@ class _Reader:
                 self.skip_rest_of_bracket()
             else:
                 self.end_bracket()
-            return self.obj_cache[oid]
+            cached = self.obj_cache[oid]
+            _note_image(self, cached)
+            return cached
 
         saved_built = self.built
         saved_mode = self._prim_mode
@@ -473,16 +487,20 @@ class _Reader:
         self.end_bracket()
         return array
 
-    def read_old_array_list(self) -> None:
+    def read_old_array_list(self) -> np.ndarray | None:
         if not self.bool():
-            return
+            return None
         count = self.size("texcoord list", limit=64)
+        first = None
         self.begin_bracket()
         for _ in range(count):
             self.begin_bracket()
-            self.read_geometry_array_struct()
+            array = self.read_geometry_array_struct()
+            if first is None and isinstance(array, np.ndarray):
+                first = array
             self.end_bracket()
         self.end_bracket()
+        return first
 
     def read_inline_primitive(self):
         ptype = self.i32()
@@ -537,8 +555,11 @@ class _Reader:
             self.string()  # class name, property tag is omitted in binary
         oid = self.u32()
         if oid != 0 and oid in self.obj_cache:
-            return self.obj_cache[oid]
+            cached = self.obj_cache[oid]
+            _note_image(self, cached)
+            return cached
         _filename = self.string()
+        payload = None
         self.i32()  # write hint
         decision = self.i32()
         if decision == 0:  # inline pixels
@@ -560,6 +581,9 @@ class _Reader:
         elif decision == 1:  # embedded file (jpeg/png/dds)
             nbytes = self.u32()
             if nbytes:
+                if self.textures:
+                    self._need(nbytes)
+                    payload = bytes(self.data[self.pos : self.pos + nbytes])
                 self.skip(nbytes)
         elif decision in (2, 3):
             pass
@@ -569,18 +593,20 @@ class _Reader:
         if oid != 0:
             self.obj_cache[oid] = ("image",)
         _read_object_fields(self)
-        marker = ("image", decision)
+        marker = ("image", decision, payload)
+        _note_image(self, marker)
         if oid != 0:
             self.obj_cache[oid] = marker
         return marker
 
-    def read_image_ref(self) -> None:
+    def read_image_ref(self):
         if self.bool():
-            self.read_image()
+            return self.read_image()
+        return None
 
     # --- geometry emit ---------------------------------------------------
 
-    def emit_geometry(self, vertices: np.ndarray | None, prims: list) -> None:
+    def emit_geometry(self, vertices: np.ndarray | None, prims: list, texcoords: np.ndarray | None = None) -> None:
         if vertices is None:
             return
         coords = np.asarray(vertices, dtype=np.float64)
@@ -629,7 +655,18 @@ class _Reader:
         merged = merged[valid]
         if len(merged) == 0:
             return
-        self.meshes.append(Mesh(coords, np.ascontiguousarray(merged.astype(np.int32))))
+        mesh = Mesh(coords, np.ascontiguousarray(merged.astype(np.int32)))
+        if (
+            self.textures
+            and self.current_image is not None
+            and isinstance(texcoords, np.ndarray)
+            and texcoords.ndim == 2
+            and texcoords.shape[1] >= 2
+            and len(texcoords) == len(coords)
+        ):
+            mesh.uv = np.ascontiguousarray(texcoords[:, :2], dtype=np.float32)
+            mesh.image = self.current_image
+        self.meshes.append(mesh)
 
 
 def _bswap32(value: int) -> int:
@@ -765,7 +802,7 @@ def _read_geometry_fields(reader: _Reader) -> None:
         reader.read_old_single_array()  # colors
         reader.read_old_single_array()  # secondary colors
         reader.read_old_single_array()  # fog coords
-        reader.read_old_array_list()  # texcoords
+        texcoords = reader.read_old_array_list()  # texcoords
         reader.read_old_array_list()  # vertex attribs
         reader.bool()  # fast-path hint (checker is always false)
     else:
@@ -775,9 +812,9 @@ def _read_geometry_fields(reader: _Reader) -> None:
         _read_optional_object_array(reader)
         _read_optional_object_array(reader)
         _read_optional_object_array(reader)
+        texcoords = _consume_object_vector(reader)
         _consume_object_vector(reader)
-        _consume_object_vector(reader)
-    reader.emit_geometry(vertices if isinstance(vertices, np.ndarray) else None, prims)
+    reader.emit_geometry(vertices if isinstance(vertices, np.ndarray) else None, prims, texcoords)
 
 
 def _read_optional_object_array(reader: _Reader) -> np.ndarray | None:
@@ -787,10 +824,20 @@ def _read_optional_object_array(reader: _Reader) -> np.ndarray | None:
     return obj if isinstance(obj, np.ndarray) else None
 
 
-def _consume_object_vector(reader: _Reader) -> None:
+def _consume_object_vector(reader: _Reader) -> np.ndarray | None:
     count = reader.size("array list", limit=64)
+    first = None
     for _ in range(count):
-        reader.read_object()
+        obj = reader.read_object()
+        if first is None and isinstance(obj, np.ndarray):
+            first = obj
+    return first
+
+
+def _note_image(reader: _Reader, obj) -> None:
+    """Remember an embedded texture (also when a Texture2D / Image is a shared reference)."""
+    if reader.textures and isinstance(obj, tuple) and len(obj) == 3 and obj[0] == "image" and obj[2]:
+        reader.current_image = obj[2]
 
 
 def _read_lod_fields(reader: _Reader) -> None:
@@ -1009,7 +1056,9 @@ def _read_texture_fields(reader: _Reader) -> None:
 
 
 def _read_texture2d_fields(reader: _Reader) -> None:
-    reader.read_image_ref()
+    image = reader.read_image_ref()
+    if isinstance(image, tuple) and len(image) == 3 and image[2]:
+        reader.built = image  # a shared Texture2D reference then restores the image too
     reader.i32()
     reader.i32()
 

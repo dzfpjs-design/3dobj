@@ -170,6 +170,7 @@ def load_osgb_bytes(
     reader: str,
     osgconv: str | None,
     filename: str = "tile.osgb",
+    textures: bool = False,
 ) -> tuple[OsgbContents, str]:
     """Read one OSGB blob. ``reader`` is ``auto``, ``python`` or ``osgconv``."""
     mode = reader.lower().strip()
@@ -177,7 +178,7 @@ def load_osgb_bytes(
         raise OsgbError(f"未知读取方式 {reader}")
 
     def via_python() -> OsgbContents:
-        contents = read_osgb_bytes(data)
+        contents = read_osgb_bytes(data, textures=textures)
         if contents.byte_length and contents.trailing_bytes > 64:
             raise OsgbError(
                 f"解析未消费文件末尾 {contents.trailing_bytes} 字节，可能不完整",

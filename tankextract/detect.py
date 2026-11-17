@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from tankextract.model import Tank
+from tankextract.treefilter import roof_roughness
 
 
 @dataclass
@@ -847,7 +848,16 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
         girders = _wind_girders(samples["outer"], center, radius, z_base, z_top)
         base_ring = _base_ring(samples["outer"], center, radius, z_base)
         stair = _spiral_stair(samples["outer"], center, radius, z_base, wall_h)
-    return Tank(
+    if fit.get("ok"):
+        fits = [fit.get(k) for k in ("rms_flat", "rms_cone", "rms_dome") if fit.get(k) is not None]
+        roof_rms = float(min(fits)) if fits else None
+    else:
+        roof_rms = None
+    if roof_rms is None and sphere is None:
+        roof_rms = roof_roughness(samples["roof"], float(center[0]), float(center[1]), float(radius))
+    tree_geom = {"rms": rms, "wall_fill": float(fill), "roof_rms": roof_rms, "interior_ratio": float(interior),
+                 "sphere": sphere is not None}
+    tank = Tank(
         block=block,
         srs=srs,
         origin=origin,
@@ -870,6 +880,8 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
         handrail_height=handrail,
         sphere=sphere,
     )
+    tank.tree_check = {"geometry": tree_geom}
+    return tank
 
 
 def _roof_cloud(samples, center, radius: float, z_top: float) -> np.ndarray:

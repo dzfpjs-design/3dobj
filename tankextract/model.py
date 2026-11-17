@@ -34,6 +34,9 @@ class Tank:
     # platform / walkways, sphere pedestals + bracing) and their primitive parts.
     accessories: dict = field(default_factory=dict)
     extra_parts: list = field(default_factory=list)
+    # Tree-crown check (treefilter): geometry cues measured in pass 2, texture colour,
+    # and the verdict {"tree": bool, "reason": str}.
+    tree_check: dict = field(default_factory=dict)
 
     @property
     def center_local(self) -> tuple[float, float]:
