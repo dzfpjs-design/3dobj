@@ -48,6 +48,7 @@ class RunOptions:
     structures: bool = True  # stair towers, roof platforms / walkways, wall stairs, sphere pedestals
     pipes: bool = False  # wall pipes, pipe runs and pipe racks (off by default)
     grounding: bool = True  # snap bottoms to the measured ground / foundation top, model foundations
+    exclude: tuple[str, ...] = ()  # tank IDs (e.g. Tank_007) checked by eye and dropped; other IDs are kept
 
 
 def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
@@ -97,6 +98,19 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     connectors.sort(key=lambda c: (c.block, c.tank_a, c.tank_b))
     for index, conn in enumerate(connectors, start=1):
         conn.name = f"Connector_{index:03d}"
+    if options.exclude:
+        # Drop tanks rejected on review (trees, etc.) after numbering, so every other tank and
+        # connector keeps the ID it had in the full run; their foundations, stairs and other
+        # attached parts are never built because structures are detected per remaining tank.
+        drop = {name.strip() for name in options.exclude if name.strip()}
+        unknown = sorted(drop - {tank.name for tank in tanks})
+        if unknown:
+            raise ValueError(f"--exclude 中的罐编号不存在: {', '.join(unknown)}")
+        tanks = [tank for tank in tanks if tank.name not in drop]
+        before = len(connectors)
+        connectors = [c for c in connectors if c.tank_a not in drop and c.tank_b not in drop]
+        structures = [st for st in structures if getattr(st, "parent", None) not in drop]
+        log(f"  按 --exclude 剔除 {len(drop)} 个罐: {', '.join(sorted(drop))}；去掉相连走道 {before - len(connectors)} 处")
     _assume_missing_rails(connectors, log)
     ground_rows: list = []
     if (options.structures or options.grounding) and tanks:
