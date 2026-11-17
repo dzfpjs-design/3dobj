@@ -27,7 +27,8 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupLogging=yes
 
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; The Chocolatey Inno Setup package does not ship this translation.
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
