@@ -5,7 +5,7 @@
 
 #define MyAppName "罐体提取"
 #define MyAppPublisher "tankextract"
-#define MyAppExeName "TankExtract.exe"
+#define MyAppExeName "TankExtractGUI.exe"
 
 [Setup]
 AppId={{A7C3E1B2-4F5D-4A91-9C2E-7B6D8E0F1A23}

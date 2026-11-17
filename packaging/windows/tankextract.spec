@@ -65,12 +65,14 @@ exe_cli = EXE(
     console=True,
     disable_windowed_traceback=False,
 )
+# Windows filesystems ignore case, so this cannot be TankExtract.exe:
+# that name is the same file as tankextract.exe and the GUI would replace the CLI.
 exe_gui = EXE(
     pyz_gui,
     gui.scripts,
     [],
     exclude_binaries=True,
-    name="TankExtract",
+    name="TankExtractGUI",
     console=False,
     disable_windowed_traceback=False,
 )

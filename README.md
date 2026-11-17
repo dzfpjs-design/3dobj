@@ -50,8 +50,8 @@ Linux 上同样可以用 micromamba（把上面的 `osx-arm64` 换成 `linux-64`
 
 1. 从本仓库的 GitHub Release（预发布 `tankextract-v1.0.0`）或 Actions 的 `TankExtract-Setup` 附件下载 `TankExtract-Setup-1.0.0.exe`。
 2. 双击安装。可以改安装目录。开始菜单会有「罐体提取」和「卸载罐体提取」。
-3. 打开「罐体提取」。选择 OSGB 块文件夹或 zip（中文路径可以，例如 `D:\来安模型\E_OSGB`），再选输出文件夹。建议勾选「局部坐标输出」。排除罐编号填 `Tank_001,Tank_059` 这种形式。点「开始提取」，日志显示在窗口下方。
-4. 命令行同样可用（安装目录默认是 `C:\Program Files\TankExtract`）：
+3. 打开开始菜单里的「罐体提取」（安装目录中的 `TankExtractGUI.exe`）。选择 OSGB 块文件夹或 zip（中文路径可以，例如 `D:\来安模型\E_OSGB`），再选输出文件夹。建议勾选「局部坐标输出」。排除罐编号填 `Tank_001,Tank_059` 这种形式。点「开始提取」，日志显示在窗口下方。
+4. 命令行是同一个目录里的 `tankextract.exe`（默认安装目录是 `C:\Program Files\TankExtract`）：
 
 ```bat
 "C:\Program Files\TankExtract\tankextract.exe" ^

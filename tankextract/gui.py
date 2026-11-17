@@ -1,7 +1,9 @@
 """Chinese Tkinter launcher for the Windows installer.
 
-The window is not imported by the CLI. Double-click ``TankExtract.exe``;
-``tankextract.exe`` stays the command-line tool.
+The window is not imported by the CLI. The Windows installer launches
+``TankExtractGUI.exe``; ``tankextract.exe`` stays the command-line tool.
+Those names differ by more than case, because Windows treats
+``TankExtract.exe`` and ``tankextract.exe`` as one file.
 """
 
 from __future__ import annotations

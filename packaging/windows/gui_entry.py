@@ -1,6 +1,8 @@
 """Windowed launcher. Does not import tankextract so the bundle stays small.
 
 It starts the sibling console program ``tankextract.exe`` and shows its log.
+The windowed file is ``TankExtractGUI.exe``: on Windows that is a different
+file from ``tankextract.exe``, while ``TankExtract.exe`` would not be.
 """
 
 from __future__ import annotations

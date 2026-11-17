@@ -3,18 +3,36 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $root
 
+function Get-PeSubsystem([string]$Path) {
+    # IMAGE_SUBSYSTEM_WINDOWS_GUI is 2, IMAGE_SUBSYSTEM_WINDOWS_CUI is 3.
+    $fs = [System.IO.File]::Open($Path, "Open", "Read", "Read")
+    try {
+        $fs.Seek(0x3C, "Begin") | Out-Null
+        $off = New-Object byte[] 4
+        [void]$fs.Read($off, 0, 4)
+        $pe = [BitConverter]::ToInt32($off, 0)
+        $fs.Seek($pe + 92, "Begin") | Out-Null
+        $sub = New-Object byte[] 2
+        [void]$fs.Read($sub, 0, 2)
+        return [BitConverter]::ToUInt16($sub, 0)
+    } finally {
+        $fs.Close()
+    }
+}
+
 $version = python -c "import tankextract; print(tankextract.__version__)"
 if (-not $version) { throw "could not read tankextract version" }
 Write-Host "tankextract $version"
 
 python -m PyInstaller packaging\windows\tankextract.spec --noconfirm --clean
 $dist = Join-Path $root "dist\TankExtract"
-if (-not (Test-Path (Join-Path $dist "tankextract.exe"))) {
-    throw "PyInstaller did not produce tankextract.exe"
-}
-if (-not (Test-Path (Join-Path $dist "TankExtract.exe"))) {
-    throw "PyInstaller did not produce TankExtract.exe"
-}
+$cli = Join-Path $dist "tankextract.exe"
+$gui = Join-Path $dist "TankExtractGUI.exe"
+if (-not (Test-Path -LiteralPath $cli)) { throw "PyInstaller did not produce tankextract.exe" }
+if (-not (Test-Path -LiteralPath $gui)) { throw "PyInstaller did not produce TankExtractGUI.exe" }
+# IMAGE_SUBSYSTEM_WINDOWS_GUI is 2, IMAGE_SUBSYSTEM_WINDOWS_CUI is 3.
+if ((Get-PeSubsystem $cli) -ne 3) { throw "tankextract.exe is not a console executable" }
+if ((Get-PeSubsystem $gui) -ne 2) { throw "TankExtractGUI.exe is not a windowed executable" }
 
 $blenderVersion = "4.2.14"
 $zipName = "blender-$blenderVersion-windows-x64.zip"
