@@ -22,30 +22,31 @@ Write-Host "bundled blender:"
 & $blender --version
 if ($LASTEXITCODE -ne 0) { throw "bundled blender failed" }
 
-$work = "C:\来安模型"
-if (Test-Path $work) { Remove-Item -Recurse -Force $work }
+# Build the Chinese folder name in code so this ASCII script still exercises Unicode paths.
+$work = "C:\" + [string]::new([char[]](0x6765, 0x5B89, 0x6A21, 0x578B))
+if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 New-Item -ItemType Directory -Path $work | Out-Null
-$sample = Join-Path $work "样本"
+$sample = Join-Path $work ([string]::new([char[]](0x6837, 0x672C)))
 Copy-Item -Recurse (Join-Path $root "tests\fixtures") $sample
 # Drop macOS junk if any slipped into the tree.
 Get-ChildItem -Recurse $sample -Force | Where-Object { $_.Name.StartsWith("._") -or $_.Name -eq "__MACOSX" } | Remove-Item -Recurse -Force
 
-$fixtureOut = Join-Path $work "样本输出"
+$fixtureOut = Join-Path $work ([string]::new([char[]](0x6837, 0x672C, 0x8F93, 0x51FA)))
 & $exe --input $sample --output $fixtureOut --reader python --no-blender --no-structures --no-connectors --limit-tiles 4
 if ($LASTEXITCODE -ne 0) { throw "fixture run failed: $LASTEXITCODE" }
 $stats = Get-Content (Join-Path $fixtureOut "read_stats.json") -Raw -Encoding UTF8
 if ($stats -notmatch '"tiles"\s*:\s*[1-9]') { throw "fixture run did not read any tile: $stats" }
 Write-Host "fixture tiles ok"
 
-$zip = Join-Path $work "样本.zip"
+$zip = Join-Path $work (([string]::new([char[]](0x6837, 0x672C))) + ".zip")
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path (Join-Path $sample "*") -DestinationPath $zip
-$zipOut = Join-Path $work "zip输出"
+$zipOut = Join-Path $work ("zip" + [string]::new([char[]](0x8F93, 0x51FA)))
 & $exe --input $zip --output $zipOut --reader python --no-blender --no-structures --no-connectors --limit-tiles 4
 if ($LASTEXITCODE -ne 0) { throw "unicode zip run failed: $LASTEXITCODE" }
 Write-Host "unicode zip ok"
 
-$self = Join-Path $work "自检"
+$self = Join-Path $work ([string]::new([char[]](0x81EA, 0x68C0)))
 & $exe --self-test --output $self --reader python --local-offset --no-tree-filter
 if ($LASTEXITCODE -ne 0) { throw "self-test failed: $LASTEXITCODE" }
 $fbx = Join-Path $self "tanks\Tank_001.fbx"

@@ -32,6 +32,12 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      - name: Cache portable Blender
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/blender-4.2.14-windows-x64.zip
+          key: blender-4.2.14-windows-x64
+
       - name: Build installer
         run: powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 

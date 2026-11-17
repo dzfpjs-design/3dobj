@@ -19,24 +19,26 @@ if (-not (Test-Path (Join-Path $dist "TankExtract.exe"))) {
 $blenderVersion = "4.2.14"
 $zipName = "blender-$blenderVersion-windows-x64.zip"
 $zipPath = Join-Path $env:TEMP $zipName
-$urls = @(
-    "https://mirrors.aliyun.com/blender/release/Blender4.2/$zipName",
-    "https://download.blender.org/release/Blender4.2/$zipName"
-)
-$downloaded = $false
-foreach ($url in $urls) {
-    Write-Host "GET $url"
-    try {
-        curl.exe -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 900 -o $zipPath $url
+$haveZip = (Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 50MB)
+if ($haveZip) {
+    Write-Host "using existing Blender zip $zipPath"
+} else {
+    $urls = @(
+        "https://download.blender.org/release/Blender4.2/$zipName",
+        "https://mirrors.aliyun.com/blender/release/Blender4.2/$zipName"
+    )
+    $downloaded = $false
+    foreach ($url in $urls) {
+        Write-Host "GET $url"
+        curl.exe -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 1800 -o $zipPath $url
         if ($LASTEXITCODE -eq 0 -and (Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 50MB)) {
             $downloaded = $true
             break
         }
-    } catch {
-        Write-Host "download failed: $_"
+        Write-Host "download failed from $url"
     }
+    if (-not $downloaded) { throw "could not download Blender $blenderVersion" }
 }
-if (-not $downloaded) { throw "could not download Blender $blenderVersion" }
 
 $stage = Join-Path $env:TEMP "tankextract-blender"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
