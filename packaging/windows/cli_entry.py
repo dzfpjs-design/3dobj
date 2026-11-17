@@ -11,4 +11,5 @@ if __name__ == "__main__":
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    print("tankextract", "frozen" if getattr(sys, "frozen", False) else "source", flush=True)
     raise SystemExit(main())

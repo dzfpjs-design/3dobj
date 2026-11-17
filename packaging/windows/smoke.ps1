@@ -21,6 +21,23 @@ foreach ($path in @($exe, (Join-Path $install "TankExtract.exe"), $blender)) {
 Write-Host "bundled blender:"
 & $blender --version
 if ($LASTEXITCODE -ne 0) { throw "bundled blender failed" }
+if (-not (Test-Path (Join-Path $install "_internal"))) {
+    Write-Host "install tree:"
+    Get-ChildItem $install | ForEach-Object { Write-Host $_.Name }
+    throw "missing _internal next to tankextract.exe"
+}
+
+function Invoke-Tankextract([string[]]$TankArgs, [string]$Label) {
+    $outLog = Join-Path $env:TEMP "$Label.out.txt"
+    $errLog = Join-Path $env:TEMP "$Label.err.txt"
+    Write-Host "RUN $Label : $exe $($TankArgs -join ' ')"
+    $proc = Start-Process -FilePath $exe -ArgumentList $TankArgs -Wait -PassThru `
+        -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+    Write-Host "EXIT $Label = $($proc.ExitCode)"
+    if (Test-Path $outLog) { Get-Content -LiteralPath $outLog | Write-Host }
+    if (Test-Path $errLog) { Get-Content -LiteralPath $errLog | Write-Host }
+    if ($proc.ExitCode -ne 0) { throw "$Label failed: $($proc.ExitCode)" }
+}
 
 # Build the Chinese folder name in code so this ASCII script still exercises Unicode paths.
 $work = "C:\" + [string]::new([char[]](0x6765, 0x5B89, 0x6A21, 0x578B))
@@ -32,8 +49,10 @@ Copy-Item -Recurse (Join-Path $root "tests\fixtures") $sample
 Get-ChildItem -Recurse $sample -Force | Where-Object { $_.Name.StartsWith("._") -or $_.Name -eq "__MACOSX" } | Remove-Item -Recurse -Force
 
 $fixtureOut = Join-Path $work ([string]::new([char[]](0x6837, 0x672C, 0x8F93, 0x51FA)))
-& $exe --input $sample --output $fixtureOut --reader python --no-blender --no-structures --no-connectors --limit-tiles 4
-if ($LASTEXITCODE -ne 0) { throw "fixture run failed: $LASTEXITCODE" }
+Invoke-Tankextract @(
+    "--input", $sample, "--output", $fixtureOut, "--reader", "python",
+    "--no-blender", "--no-structures", "--no-connectors", "--limit-tiles", "4"
+) "fixture" }
 $stats = Get-Content (Join-Path $fixtureOut "read_stats.json") -Raw -Encoding UTF8
 if ($stats -notmatch '"tiles"\s*:\s*[1-9]') { throw "fixture run did not read any tile: $stats" }
 Write-Host "fixture tiles ok"
@@ -42,13 +61,14 @@ $zip = Join-Path $work (([string]::new([char[]](0x6837, 0x672C))) + ".zip")
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path (Join-Path $sample "*") -DestinationPath $zip
 $zipOut = Join-Path $work ("zip" + [string]::new([char[]](0x8F93, 0x51FA)))
-& $exe --input $zip --output $zipOut --reader python --no-blender --no-structures --no-connectors --limit-tiles 4
-if ($LASTEXITCODE -ne 0) { throw "unicode zip run failed: $LASTEXITCODE" }
+Invoke-Tankextract @(
+    "--input", $zip, "--output", $zipOut, "--reader", "python",
+    "--no-blender", "--no-structures", "--no-connectors", "--limit-tiles", "4"
+) "zip" }
 Write-Host "unicode zip ok"
 
 $self = Join-Path $work ([string]::new([char[]](0x81EA, 0x68C0)))
-& $exe --self-test --output $self --reader python --local-offset --no-tree-filter
-if ($LASTEXITCODE -ne 0) { throw "self-test failed: $LASTEXITCODE" }
+Invoke-Tankextract @("--self-test", "--output", $self, "--reader", "python", "--local-offset", "--no-tree-filter") "selftest" }
 $fbx = Join-Path $self "tanks\Tank_001.fbx"
 $report = Join-Path $self "tanks\blender_report.json"
 if (-not (Test-Path $fbx)) { throw "self-test did not write $fbx" }
