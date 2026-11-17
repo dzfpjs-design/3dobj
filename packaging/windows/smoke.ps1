@@ -52,7 +52,7 @@ $fixtureOut = Join-Path $work ([string]::new([char[]](0x6837, 0x672C, 0x8F93, 0x
 Invoke-Tankextract @(
     "--input", $sample, "--output", $fixtureOut, "--reader", "python",
     "--no-blender", "--no-structures", "--no-connectors", "--limit-tiles", "4"
-) "fixture" }
+) "fixture"
 $stats = Get-Content (Join-Path $fixtureOut "read_stats.json") -Raw -Encoding UTF8
 if ($stats -notmatch '"tiles"\s*:\s*[1-9]') { throw "fixture run did not read any tile: $stats" }
 Write-Host "fixture tiles ok"
@@ -64,11 +64,11 @@ $zipOut = Join-Path $work ("zip" + [string]::new([char[]](0x8F93, 0x51FA)))
 Invoke-Tankextract @(
     "--input", $zip, "--output", $zipOut, "--reader", "python",
     "--no-blender", "--no-structures", "--no-connectors", "--limit-tiles", "4"
-) "zip" }
+) "zip"
 Write-Host "unicode zip ok"
 
 $self = Join-Path $work ([string]::new([char[]](0x81EA, 0x68C0)))
-Invoke-Tankextract @("--self-test", "--output", $self, "--reader", "python", "--local-offset", "--no-tree-filter") "selftest" }
+Invoke-Tankextract @("--self-test", "--output", $self, "--reader", "python", "--local-offset", "--no-tree-filter") "selftest"
 $fbx = Join-Path $self "tanks\Tank_001.fbx"
 $report = Join-Path $self "tanks\blender_report.json"
 if (-not (Test-Path $fbx)) { throw "self-test did not write $fbx" }
