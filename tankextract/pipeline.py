@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import posixpath
 import re
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from tankextract.grounding import ground_only
 from tankextract.structures import collect_faces, detect_structures, tank_boxes
 from tankextract.sidecar import write_connectors, write_ground_report, write_sidecars, write_structures
 from tankextract.treefilter import TreeFilterConfig, colour_stats, judge, sample_colours
-from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv
+from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv, resource_path
 
 _LEVEL_RE = re.compile(r"_L(\d+)(?:_|\.)", re.IGNORECASE)
 
@@ -156,8 +157,9 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     blender = resolve_blender(options.blender)
     if not blender:
         raise FileNotFoundError(
-            "未找到 Blender。macOS 默认查找 /Applications/Blender.app/Contents/MacOS/Blender，"
-            "也可以把 blender 放入 PATH，或传入 --blender。"
+            "未找到 Blender。Windows 安装包会自带一份；也可以传入 --blender，"
+            "或安装到「Program Files\\Blender Foundation」。"
+            "macOS 默认查找 /Applications/Blender.app/Contents/MacOS/Blender。"
         )
     _export_blender(blender, spec_path, output, options.merge, log)
     return tanks
@@ -647,10 +649,15 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
 def _export_blender(blender: str, spec_path: Path, output: Path, merge: bool, log) -> None:
     import subprocess
 
-    script = Path(__file__).resolve().parent / "blender" / "export_tanks.py"
+    script = resource_path("tankextract", "blender", "export_tanks.py")
+    if not script.is_file():
+        script = Path(__file__).resolve().parent / "blender" / "export_tanks.py"
+    if not script.is_file():
+        raise FileNotFoundError(f"找不到 Blender 导出脚本: {script}")
     cmd = [
         blender,
         "-b",
+        "--factory-startup",
         "--python-exit-code",
         "1",
         "-P",
@@ -664,7 +671,17 @@ def _export_blender(blender: str, spec_path: Path, output: Path, merge: bool, lo
     if merge:
         cmd.append("--merge")
     log("调用 Blender 导出 FBX…")
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        check=False,
+    )
     log_path = output / "blender.log"
     log_path.write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
     if proc.returncode != 0:

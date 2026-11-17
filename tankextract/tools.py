@@ -14,6 +14,7 @@ import posixpath
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -53,18 +54,65 @@ def resolve_osgconv(explicit: str | None = None) -> str | None:
     return None
 
 
+def app_dir() -> Path | None:
+    """Directory of the frozen executable, if this process is a PyInstaller app."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return None
+
+
+def bundled_blender_candidates() -> list[Path]:
+    """Blender shipped next to the Windows installer (portable unzip)."""
+    root = app_dir()
+    if root is None:
+        return []
+    names = ("blender.exe", "Blender.exe", "blender")
+    found: list[Path] = []
+    for folder in ("blender", "Blender"):
+        for name in names:
+            found.append(root / folder / name)
+    return found
+
+
+def installed_blender_candidates() -> list[Path]:
+    """Blender already installed on this machine (macOS bundle or Windows Program Files)."""
+    found = [Path(_MAC_BLENDER)]
+    if sys.platform != "win32":
+        return found
+    roots = []
+    for key in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        value = os.environ.get(key)
+        if value:
+            roots.append(Path(value) / "Blender Foundation")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        roots.append(Path(local) / "Programs" / "Blender Foundation")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for child in sorted(root.glob("Blender*"), reverse=True):
+            found.append(child / "blender.exe")
+    return found
+
+
 def resolve_blender(explicit: str | None = None) -> str | None:
-    """Return a Blender executable, including the macOS app bundle."""
+    """Return a Blender executable.
+
+    Order: ``--blender``, ``$BLENDER``, a copy bundled next to this program
+    (Windows installer), ``blender`` on ``PATH``, then an installed Blender
+    (macOS app bundle or Windows Program Files).
+    """
     candidates: list[str] = []
     if explicit:
         candidates.append(explicit)
     env = os.environ.get("BLENDER")
     if env:
         candidates.append(env)
+    candidates.extend(str(path) for path in bundled_blender_candidates())
     found = shutil.which("blender")
     if found:
         candidates.append(found)
-    candidates.append(_MAC_BLENDER)
+    candidates.extend(str(path) for path in installed_blender_candidates())
     seen: set[str] = set()
     for candidate in candidates:
         if not candidate or candidate in seen:
@@ -74,6 +122,18 @@ def resolve_blender(explicit: str | None = None) -> str | None:
         if path.is_file() and os.access(path, os.X_OK):
             return str(path)
     return None
+
+
+def resource_path(*parts: str) -> Path:
+    """Locate a data file, including files shipped inside a PyInstaller build."""
+    frozen = getattr(sys, "_MEIPASS", None)
+    if frozen:
+        candidate = Path(frozen).joinpath(*parts)
+        if candidate.is_file():
+            return candidate
+    here = Path(__file__).resolve().parent
+    candidate = here.joinpath(*parts[1:]) if parts and parts[0] == "tankextract" else here.joinpath(*parts)
+    return candidate
 
 
 def _osg_env(osgconv: str) -> dict[str, str]:

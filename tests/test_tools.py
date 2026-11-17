@@ -2,12 +2,14 @@
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 import numpy as np
 
+from tankextract.gui import build_cli_args
 from tankextract.osgb_writer import write_geode_osgb
-from tankextract.tools import osgconv_to_mesh, parse_obj, resolve_osgconv
+from tankextract.tools import osgconv_to_mesh, parse_obj, resolve_blender, resolve_osgconv, resource_path
 
 
 def test_resolve_osgconv_prefers_path_then_micromamba_home(tmp_path, monkeypatch):
@@ -34,6 +36,40 @@ def test_resolve_osgconv_prefers_path_then_micromamba_home(tmp_path, monkeypatch
     explicit.write_text("#!/bin/sh\n", encoding="utf-8")
     explicit.chmod(explicit.stat().st_mode | stat.S_IEXEC)
     assert resolve_osgconv(str(explicit)) == str(explicit)
+
+
+def test_bundled_blender_wins_over_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("BLENDER", raising=False)
+    exe = tmp_path / "tankextract.exe"
+    exe.write_text("exe", encoding="utf-8")
+    bundled = tmp_path / "blender" / "blender.exe"
+    bundled.parent.mkdir()
+    bundled.write_text("blender", encoding="utf-8")
+    bundled.chmod(bundled.stat().st_mode | stat.S_IEXEC)
+    other = tmp_path / "path-blender"
+    other.write_text("other", encoding="utf-8")
+    other.chmod(other.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.setattr("tankextract.tools.shutil.which", lambda name: str(other))
+    assert resolve_blender(None) == str(bundled)
+    assert resolve_blender(str(other)) == str(other)
+
+
+def test_gui_args_and_export_script():
+    args = build_cli_args(
+        r"D:\来安模型\E_OSGB.zip",
+        r"D:\来安模型\输出",
+        local_offset=True,
+        no_tree_filter=True,
+        exclude="Tank_001,Tank_059",
+    )
+    assert args[:4] == ["--input", r"D:\来安模型\E_OSGB.zip", "--output", r"D:\来安模型\输出"]
+    assert "--local-offset" in args
+    assert "--no-tree-filter" in args
+    assert args[-2:] == ["--exclude", "Tank_001,Tank_059"]
+    script = resource_path("tankextract", "blender", "export_tanks.py")
+    assert script.is_file()
 
 
 def test_parse_obj_quads_and_negative_indices():

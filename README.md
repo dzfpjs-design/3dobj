@@ -44,6 +44,26 @@ Blender 4.x 使用已经装好的应用程序，不需要放进 PATH：
 
 Linux 上同样可以用 micromamba（把上面的 `osx-arm64` 换成 `linux-64`）。没有 osgconv 时，内置解析器仍然可以读 ContextCapture 的 OSGB。
 
+## Windows 安装与使用说明
+
+面向一台干净的 Windows 10/11 64 位电脑：不需要预先安装 Python、conda 或 Blender。安装包里已经带上 Python 运行时、numpy、scipy、Pillow，以及便携版 Blender 4.2.14 LTS。EPSG:4548 的投影字符串写在程序里，不依赖 pyproj。OSGB 用内置解析器读取，不附带 osgconv（Mac 上可选的那条路径在 Windows 安装包里没有）。
+
+1. 从本仓库的 GitHub Release（预发布 `tankextract-v1.0.0`）或 Actions 的 `TankExtract-Setup` 附件下载 `TankExtract-Setup-1.0.0.exe`。
+2. 双击安装。可以改安装目录。开始菜单会有「罐体提取」和「卸载罐体提取」。
+3. 打开「罐体提取」。选择 OSGB 块文件夹或 zip（中文路径可以，例如 `D:\来安模型\E_OSGB`），再选输出文件夹。建议勾选「局部坐标输出」。排除罐编号填 `Tank_001,Tank_059` 这种形式。点「开始提取」，日志显示在窗口下方。
+4. 命令行同样可用（安装目录默认是 `C:\Program Files\TankExtract`）：
+
+```bat
+"C:\Program Files\TankExtract\tankextract.exe" ^
+  --input "D:\来安模型\E_OSGB" ^
+  --output "D:\来安模型\输出" ^
+  --local-offset
+```
+
+程序按这个顺序找 Blender：`--blender`、环境变量 `BLENDER`、安装目录里的 `blender\blender.exe`、PATH、最后才是本机「Program Files\Blender Foundation」里已安装的 Blender。装好之后不需要联网。
+
+卸载用开始菜单里的「卸载罐体提取」。
+
 ## OSGB 怎么读
 
 默认 `--reader auto`：
@@ -215,7 +235,8 @@ CSV / GeoJSON 字段包括：id、X、Y、Z_base、Z_ground、radius_m、wall_he
 - 螺旋梯、抗风圈、底圈、顶圈只有在几何上比较完整时才记录。照片模型上的栏杆、细管道通常不稳定，不会硬猜。
 - 内浮顶、保温层这些从外壳上看不见的结构不会出现。
 - 绝对坐标的 FBX 顶点是 Blender 的 float32。EPSG:4548 的 Y 大约在 3.5×10⁶，float32 的步长约 0.25 m，厘米级尺寸保不住。要可编辑的白模请加 `--local-offset`；测量值以 geojson/csv 的双精度绝对坐标为准。
-- 内置解析器不覆盖 OSG 的全部类。没有 binary bracket 的文件若出现未实现的类，该瓦片会失败并尝试 osgconv。inline schema（attribute bit 0x2）直接拒绝。
+- 内置解析器不覆盖 OSG 的全部类。没有 binary bracket 的文件若出现未实现的类，该瓦片会失败并尝试 osgconv。inline schema（attribute bit 0x2）直接拒绝。Windows 安装包不带 osgconv，这种瓦片会被跳过并记入 `read_stats.json`。
+- Windows 安装包体积大，主要是内置的 Blender 4.2.14。FBX 导出只用这一版测试过的脚本接口。
 - 一个 zip 视为一个块、一个原点。跨两个块的罐不会被拼成一个。
 - 球罐按上半球拟合；下半球常被照片模型糊成竖直“裙边”，不参与球半径拟合。半径小于 2 m 的立式小容器默认不收（`--min-radius 1.5` 可放开，但会混进立管、阀门井等）。
 - 罐间连接只找“罐顶到罐顶”的走道 / 管道。罐到建筑的走道不建模。

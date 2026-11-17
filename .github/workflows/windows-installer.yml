@@ -1,0 +1,60 @@
+name: Windows installer
+
+on:
+  push:
+    branches:
+      - cursor/tank-osgb-extract-304d
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install "pyinstaller>=6.3,<7" pytest
+
+      - name: Unit tests
+        run: python -m pytest tests -q --tb=line
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+
+      - name: Smoke test installed program
+        run: powershell -ExecutionPolicy Bypass -File packaging\windows\smoke.ps1
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TankExtract-Setup
+          path: dist/installer/TankExtract-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Publish pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tankextract-v1.0.0
+          name: TankExtract 1.0.0 Windows
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            Windows 10/11 x64 安装包。自带 Python、numpy、scipy、Pillow 和 Blender 4.2.14 LTS，安装后可离线使用。
+            图形界面是开始菜单里的「罐体提取」；命令行是安装目录下的 tankextract.exe。
+          files: dist/installer/TankExtract-Setup-*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
