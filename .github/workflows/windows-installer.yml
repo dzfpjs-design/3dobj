@@ -42,6 +42,7 @@ jobs:
         run: powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 
       - name: Smoke test installed program
+        timeout-minutes: 40
         run: powershell -ExecutionPolicy Bypass -File packaging\windows\smoke.ps1
 
       - name: Upload installer artifact

@@ -28,15 +28,11 @@ if (-not (Test-Path (Join-Path $install "_internal"))) {
 }
 
 function Invoke-Tankextract([string[]]$TankArgs, [string]$Label) {
-    $outLog = Join-Path $env:TEMP "$Label.out.txt"
-    $errLog = Join-Path $env:TEMP "$Label.err.txt"
-    Write-Host "RUN $Label : $exe $($TankArgs -join ' ')"
-    $proc = Start-Process -FilePath $exe -ArgumentList $TankArgs -Wait -PassThru `
-        -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-    Write-Host "EXIT $Label = $($proc.ExitCode)"
-    if (Test-Path $outLog) { Get-Content -LiteralPath $outLog | Write-Host }
-    if (Test-Path $errLog) { Get-Content -LiteralPath $errLog | Write-Host }
-    if ($proc.ExitCode -ne 0) { throw "$Label failed: $($proc.ExitCode)" }
+    Write-Host "RUN $Label"
+    # Stream output. Redirecting with Start-Process -Wait deadlocks once the
+    # pipe buffer fills, which is what hung the previous smoke test.
+    & $exe @TankArgs
+    if ($LASTEXITCODE -ne 0) { throw "$Label failed: $LASTEXITCODE" }
 }
 
 # Build the Chinese folder name in code so this ASCII script still exercises Unicode paths.
