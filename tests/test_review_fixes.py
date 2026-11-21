@@ -43,16 +43,23 @@ class _Conn:
         self.rail_source = "measured"
 
 
-def test_precision_does_not_choose_segments_and_budget_does():
-    # quality full is the 96-segment regression. 50 cm does not change either mode.
+def test_precision_sets_shell_chord_and_not_the_rail():
+    # quality full stays on the requested segment count.
     assert tessellation_segments(96, 0.50, 2000) == 96
-    assert tessellation_segments(96, 0.05, 2000) == 96
-    budget_loose = tessellation_segments(96, 0.50, 2000, quality="budget", radius=10, roof="sphere")
-    budget_tight = tessellation_segments(96, 0.50, 200, quality="budget", radius=10, roof="sphere")
-    assert budget_loose < 96
-    assert budget_tight <= budget_loose
-    assert tessellation_segments(96, 0.05, 2000, quality="budget", radius=10, roof="sphere") == budget_loose
-    row = face_budget_row("LA0001_body", 2500, 2000)
+    assert tessellation_segments(96, 0.10, 2000) == 96
+    # A large shell gets more sides when the chord target tightens from 50 cm to 10 cm.
+    coarse = tessellation_segments(96, 0.50, 8000, quality="budget", radius=40, roof="flat")
+    fine = tessellation_segments(96, 0.10, 8000, quality="budget", radius=40, roof="flat")
+    assert 16 <= coarse < fine <= 96
+    mesh = _module()
+    limits_coarse = {"quality": "budget", "precision_m": 0.50, "max_faces": 8000}
+    limits_fine = {"quality": "budget", "precision_m": 0.10, "max_faces": 8000}
+    assert mesh._shell_plan(limits_coarse, 40, 96, "flat")["segments"] == coarse
+    assert mesh._shell_plan(limits_fine, 40, 96, "flat")["segments"] == fine
+    rail_a = mesh._ring_pipe(0, 0, 1, 5, 0.025, [], circ=12)
+    rail_b = mesh._ring_pipe(0, 0, 1, 5, 0.025, [], circ=12)
+    assert len(rail_a[0]) == len(rail_b[0])
+    row = face_budget_row("LA0001", 2500, 2000)
     assert row["exceeded"] and row["kept"] and row["polygons"] == 2500
 
 
@@ -149,7 +156,7 @@ def test_budget_lowers_shell_faces_and_keeps_the_rail(tmp_path):
     mesh = _module()
     budget = {"quality": "budget", "max_faces": 2000}
     for roof, radius in (("flat", 8.0), ("dome", 12.0), ("sphere", 6.0)):
-        planned = plan_shell(radius, 96, 2000, roof, "budget")
+        planned = plan_shell(radius, 96, 2000, roof, "budget", 0.50)
         mirrored = mesh._shell_plan(budget, radius, 96, roof)
         assert planned["segments"] == mirrored["segments"]
         assert planned["rings"] == mirrored["rings"]
@@ -165,15 +172,15 @@ def test_budget_lowers_shell_faces_and_keeps_the_rail(tmp_path):
     budget_sphere = mesh._uv_sphere(30, 0, 6, 6, sphere["segments"], sphere["rings"])
     assert polygon_counts(budget_sphere[1])[0] < polygon_counts(full_sphere[1])[0] * 0.25
     # Same rail, girder and opening exist after the shell is coarsened.
-    circ = max(12, min(24, dome["segments"]))
+    circ = 12
     rail, rail_faces = mesh._ring_pipe(0, 0, 12.0, 7.9, 0.025, [(40.0, 12.0)], circ=circ)
     assert rail and max(v[2] for v in rail) - min(v[2] for v in rail) < 0.08
     assert all(abs(((math.degrees(math.atan2(v[1], v[0])) - 40.0 + 180) % 360) - 180) > 4 for v in rail)
     girder, _faces = mesh._ring_pipe(0, 0, 6.0, 8.15, 0.1, [], circ=circ)
     radii = [math.hypot(v[0], v[1]) for v in girder]
     assert min(radii) > 8.0 and max(radii) < 8.4
-    loose = mesh._shell_plan({"quality": "budget", "max_faces": 5000}, 15, 96, "sphere")["segments"]
-    tight = mesh._shell_plan({"quality": "budget", "max_faces": 180}, 15, 96, "sphere")["segments"]
+    loose = mesh._shell_plan({"quality": "budget", "precision_m": 0.05, "max_faces": 5000}, 15, 96, "sphere")["segments"]
+    tight = mesh._shell_plan({"quality": "budget", "precision_m": 0.05, "max_faces": 180}, 15, 96, "sphere")["segments"]
     assert tight < loose
     assert mesh._shell_plan({"quality": "full", "max_faces": 180}, 15, 96, "sphere")["segments"] == 96
     image = Image.new("RGB", (960, 420), (24, 26, 28))

@@ -50,7 +50,7 @@ Linux 上同样可以用 micromamba（把上面的 `osx-arm64` 换成 `linux-64`
 
 1. 从本仓库的 GitHub Release（预发布 `tankextract-v1.0.0`）或 Actions 的 `TankExtract-Setup` 附件下载 `TankExtract-Setup-1.0.0.exe`。
 2. 双击安装。可以改安装目录。开始菜单会有「罐体提取」和「卸载罐体提取」。
-3. 打开开始菜单里的「罐体提取」（安装目录中的 `TankExtractGUI.exe`）。选择 OSGB 块文件夹或 zip（中文路径可以，例如 `D:\来安模型\E_OSGB`），再选输出文件夹。建议勾选「局部坐标输出」。面板上的面数预算和精度可以改；精度只作记录，不会为了压面数删掉栏杆或开口。命名前缀默认 `LA`，`Tank_007` 导出为 `LA0007`，对照表在 `name_map.csv`。材质名默认 `Standard`。排除罐编号填 `Tank_001,Tank_059` 这种形式。点「开始提取」，日志显示在窗口下方。
+3. 打开开始菜单里的「罐体提取」（安装目录中的 `TankExtractGUI.exe`）。选择 OSGB 块文件夹或 zip（中文路径可以，例如 `D:\来安模型\E_OSGB`），再选输出文件夹。建议勾选「局部坐标输出」。面板上的面数预算按一座模型计算；精度是罐体弦高，不改变栏杆和踏步。质量选 `full` 则保持 96 段。命名前缀默认 `LA`，`Tank_007` 导出为 `LA0007`，对照表在 `name_map.csv`。材质名默认 `Standard`。排除罐编号填 `Tank_001,Tank_059` 这种形式。点「开始提取」，日志显示在窗口下方。
 4. 命令行是同一个目录里的 `tankextract.exe`（默认安装目录是 `C:\Program Files\TankExtract`）：
 
 ```bat
@@ -137,9 +137,9 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 | `--max-base-above-ground` | 罐底高出周围地面的上限（米），超过视为楼顶设备 | 3 |
 | `--max-aspect` | 壁高/直径上限，超过视为烟囱、塔器 | 4 |
 | `--segments` | 白模圆周分段。`--precision` / `--max-faces` 只记录和警告，不削栏杆、开口、管件 | 96 |
-| `--precision` | 记录用精度（米）。审查图建议 0.50，含义未确认，所以不参与减面 | 0.50 |
+| `--precision` | `budget` 时罐体、拱顶、球壳的弦高目标（米），默认 0.50。不改变栏杆、踏步、支腿、开口的分段 | 0.50 |
 | `--quality` | `budget`（命令行默认）只降低罐体/球壳分段；`full` 保持 `--segments`。库函数默认仍是 `full` | budget |
-| `--max-faces` | `budget` 时每个对象的多边形预算。到不了就保留该件，并写出实际多边形数、三角数和原因 | 2000 |
+| `--max-faces` | `budget` 时一座导出模型（父级空物体及其网格）的多边形预算。壳先减；某个部件单独超预算则保留并写出多边形数、三角数和原因 | 2000 |
 | `--name-prefix` | 导出名前缀。`Tank_007` → `LA0007`，原编号留在 `name_map.csv` 和 FBX 的 `tank_id` | LA |
 | `--material` | 材质名称。Blender 4.2 写出同名 Phong/Lambert，不是已验证的 3ds Max Standard 类 | Standard |
 | `--local-offset` | FBX 用局部坐标 | 关闭（顶点写绝对坐标） |

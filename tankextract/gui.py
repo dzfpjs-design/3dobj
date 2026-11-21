@@ -134,7 +134,7 @@ def launch() -> None:
     ttk.Entry(grid, textvariable=faces_var, width=8).grid(row=0, column=1, padx=4)
     ttk.Label(grid, text="质量").grid(row=0, column=2, sticky="w", padx=(12, 0))
     ttk.Combobox(grid, textvariable=quality_var, values=("budget", "full"), width=8, state="readonly").grid(row=0, column=3, padx=4)
-    ttk.Label(grid, text="精度 m（只记录，不参与减面）").grid(row=3, column=0, sticky="w")
+    ttk.Label(grid, text="精度 m（罐体弦高，不改栏杆）").grid(row=3, column=0, sticky="w")
     ttk.Entry(grid, textvariable=precision_var, width=8).grid(row=3, column=1, padx=4)
     ttk.Label(grid, text="命名前缀").grid(row=1, column=0, sticky="w")
     ttk.Entry(grid, textvariable=prefix_var, width=8).grid(row=1, column=1, padx=4)

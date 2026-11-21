@@ -55,13 +55,13 @@ jobs:
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tankextract-v1.2.0
-          name: TankExtract 1.2.0 Windows
+          tag_name: tankextract-v1.3.0
+          name: TankExtract 1.3.0 Windows
           prerelease: true
           generate_release_notes: false
           body: |
-            Windows 10/11 x64 安装包 1.2.0。自带 Python、numpy、scipy、Pillow 和 Blender 4.2.14 LTS。
-            不覆盖 tankextract-v1.0.0 和 tankextract-v1.1.0。默认 quality=budget，只降低大曲面分段；--quality full 保持 96 段。
+            Windows 10/11 x64 安装包 1.3.0。不覆盖 1.0.0、1.1.0、1.2.0。
+            budget 下精度是罐体弦高；2000 是一座模型的多边形预算。--quality full 保持 96 段。
           files: dist/installer/TankExtract-Setup-*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -74,11 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--precision", type=float, default=0.50,
-        help="记录用的精度（米），默认 0.50。含义尚未从审查图确认，因此不会拿它去减面或删栏杆、开口、管件",
+        help="budget 时罐体/拱顶/球壳的弦高目标（米），默认 0.50。不作用于栏杆、踏步、支腿和开口。full 时忽略",
     )
     parser.add_argument(
         "--max-faces", type=int, default=2000,
-        help="budget 模式下每个网格对象的多边形预算，默认 2000。到不了就保留该件并写出实际面数和原因。50cm 精度不参与这次减面",
+        help="budget 时一座模型（父级及其网格）的多边形预算，默认 2000。壳先减；超了就保留并写出多边形数、三角数和原因",
     )
     parser.add_argument("--name-prefix", default="LA", help="罐体导出名前缀，序号沿用 Tank_### 的编号，默认 LA（Tank_007 -> LA0007）")
     parser.add_argument(

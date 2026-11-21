@@ -166,19 +166,25 @@ def _move_end(conn, tank, end: str, platform: dict) -> None:
         conn.x1, conn.y1, conn.z1 = nx, ny, nz
 
 
-# Shell smoothness used only in quality=budget. It is tighter than the 50 cm
-# panel value on purpose: 50 cm is not a licence to strip rails or openings,
-# and it is not what chooses these segment counts.
-SHELL_CHORD_M = 0.10
+# Lowest shell division. Below this the wall stops reading as a cylinder.
+# Rails, treads and legs do not use this number.
 SHELL_FLOOR = 16
 
 
-def plan_shell(radius: float, explicit: int, max_faces: int | None, roof: str = "flat", quality: str = "full") -> dict:
+def plan_shell(
+    radius: float,
+    explicit: int,
+    max_faces: int | None,
+    roof: str = "flat",
+    quality: str = "full",
+    precision_m: float = 0.50,
+) -> dict:
     """Tessellation for one large shell (wall, dome, sphere, foundation).
 
-    ``quality="full"`` keeps ``explicit`` (the historical 96). ``quality="budget"``
-    lowers only this shell's segments and rings. It does not delete parts.
-    ``precision`` is intentionally not an argument.
+    ``quality="full"`` keeps ``explicit`` (the historical 96).
+    ``quality="budget"`` sets the shell chord error from ``precision_m``
+    (default 0.50 m) and then clamps that shell to ``max_faces``.
+    The precision value is not applied to rails, stairs, legs or openings.
     """
     explicit = max(3, int(explicit))
     if quality != "budget":
@@ -192,28 +198,32 @@ def plan_shell(radius: float, explicit: int, max_faces: int | None, roof: str = 
             "exceeded_estimate": False,
             "reason": "quality full keeps the requested segment count",
         }
-    count = chord_segments(max(radius, 0.1), SHELL_CHORD_M, minimum=SHELL_FLOOR, maximum=explicit)
+    chord = 0.50 if precision_m is None or precision_m <= 0 else float(precision_m)
+    count = chord_segments(max(radius, 0.1), chord, minimum=SHELL_FLOOR, maximum=explicit)
     if roof == "sphere":
-        rings = chord_segments(max(radius, 0.1), SHELL_CHORD_M, minimum=8, maximum=max(8, explicit // 2))
+        rings = chord_segments(max(radius, 0.1), chord, minimum=8, maximum=max(8, explicit // 2))
         steps = rings
     elif roof == "dome":
-        rings = chord_segments(max(radius, 0.1), SHELL_CHORD_M, minimum=4, maximum=8)
+        rings = chord_segments(max(radius, 0.1), chord, minimum=4, maximum=8)
         steps = 2 + rings
     else:
         rings = 1
         steps = 3
     reason = (
-        f"shell chord target {SHELL_CHORD_M:.2f} m, floor {SHELL_FLOOR} sides; "
-        "rails, stairs, legs and openings are separate objects and are not removed"
+        f"shell chord target {chord:.2f} m from precision_m, floor {SHELL_FLOOR} sides; "
+        "rails, stairs, legs and openings ignore precision_m"
     )
     while max_faces and count > SHELL_FLOOR and count * steps > int(max_faces):
         count -= 1
-        reason = f"shell segments reduced to fit {int(max_faces)} polygons; stopped at the {SHELL_FLOOR}-side floor"
+        reason = (
+            f"shell segments reduced so this shell stays within {int(max_faces)} polygons "
+            f"after the {chord:.2f} m chord; floor is {SHELL_FLOOR} sides"
+        )
     if roof == "sphere":
         while max_faces and rings > 8 and count * rings > int(max_faces):
             rings -= 1
             steps = rings
-            reason = f"sphere rings reduced to fit {int(max_faces)} polygons; rails and legs are kept"
+            reason = f"sphere rings reduced to fit {int(max_faces)} polygons; legs and rails are kept"
     estimate = count * steps
     exceeded = bool(max_faces) and estimate > int(max_faces)
     if exceeded:
@@ -226,7 +236,7 @@ def plan_shell(radius: float, explicit: int, max_faces: int | None, roof: str = 
         "rings": rings,
         "quality": "budget",
         "sagitta_m": _sagitta(radius, count),
-        "chord_target_m": SHELL_CHORD_M,
+        "chord_target_m": chord,
         "exceeded_estimate": exceeded,
         "reason": reason,
     }
@@ -247,9 +257,9 @@ def tessellation_segments(
     radius: float = 10.0,
     roof: str = "flat",
 ) -> int:
-    """Segment count a shell actually uses. ``precision_m`` does not change it."""
-    del precision_m
-    return plan_shell(radius, explicit, max_faces, roof, quality)["segments"]
+    """Segment count a shell uses. In budget mode this follows ``precision_m``."""
+    chord = 0.50 if precision_m is None else precision_m
+    return plan_shell(radius, explicit, max_faces, roof, quality, chord)["segments"]
 
 
 def face_budget_row(name: str, polygons: int, limit: int | None) -> dict:
