@@ -78,7 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-faces", type=int, default=2000,
-        help="budget 时一座模型（父级及其网格）的多边形预算，默认 2000。壳先减；超了就保留并写出多边形数、三角数和原因",
+        help="budget 时一座模型（父级及其网格）的多边形预算，默认 2000。壳先减；超了就保留并写出多边形数、三角数和原因。默认圆管不是 4 边，2000 不是已达成的结果",
+    )
+    parser.add_argument(
+        "--tube-sides", type=int, default=None,
+        help="圆管/圆杆断面边数。省略时栏杆用 8 边（full 为 12 边），细杆 8 边、粗杆 12 边。4 边是显式粗选项，断面接近方杆，只在明确要求时使用",
     )
     parser.add_argument("--name-prefix", default="LA", help="罐体导出名前缀，序号沿用 Tank_### 的编号，默认 LA（Tank_007 -> LA0007）")
     parser.add_argument(
@@ -172,6 +176,7 @@ def _options_from_args(args) -> RunOptions:
         precision_m=args.precision,
         max_faces=args.max_faces,
         quality=args.quality,
+        tube_sides=args.tube_sides,
         name_prefix=args.name_prefix,
         material_name=args.material,
         model_origin=tuple(args.model_origin) if args.model_origin else None,

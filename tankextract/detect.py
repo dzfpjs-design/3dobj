@@ -795,6 +795,7 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
         return None
     roof_cloud = _roof_cloud(samples, center, radius, z_top)
     info["roof_profile"] = _roof_profile(roof_cloud, center, radius, z_top)
+    info["roof_profile_z"] = _roof_profile_absolute(roof_cloud, center, radius)
     fit = _roof_analysis(samples["roof"], center, radius, z_top)
     info["roof_fit"] = {k: v for k, v in fit.items() if k != "profile"}
     handrail = None
@@ -882,6 +883,7 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
         spiral_stair=stair,
         handrail_height=handrail,
         sphere=sphere,
+        roof_profile_z=info.get("roof_profile_z") or None,
     )
     tank.tree_check = {"geometry": tree_geom}
     return tank
@@ -1257,6 +1259,35 @@ def _cone_or_dome(roof: str, roof_pts, center, radius: float, z_top: float) -> s
         return roof
     ratio = (mid - base) / rise
     return "dome" if ratio >= 0.62 else "cone"
+
+
+def _roof_profile_absolute(roof_pts, center, radius: float, bins: int = 10) -> list:
+    """Median absolute height of the roof plate in radial bins.
+
+    This is the surface a bridge can land on. It is not the straight cone
+    drawn from an eave that was lowered to leave room for a handrail.
+    """
+    if len(roof_pts) == 0 or radius <= 0:
+        return []
+    rho = np.hypot(roof_pts[:, 0] - center[0], roof_pts[:, 1] - center[1]) / radius
+    out = []
+    for i in range(bins):
+        sel = (rho >= i / bins) & (rho < (i + 1) / bins)
+        if sel.sum() < 5:
+            out.append(None)
+            continue
+        zz = roof_pts[sel, 2]
+        # The densest 0.25 m band is the plate. A long tail of wall points
+        # below the rim must not pull the median down.
+        lo, hi = float(np.percentile(zz, 5)), float(np.percentile(zz, 98))
+        edges = np.arange(lo, hi + 0.25, 0.25)
+        if len(edges) < 2:
+            out.append(round(float(np.median(zz)), 3))
+            continue
+        hist, edges = np.histogram(zz, bins=edges)
+        peak = int(np.argmax(hist))
+        out.append(round(float(0.5 * (edges[peak] + edges[peak + 1])), 3))
+    return out
 
 
 def _roof_profile(roof_pts, center, radius: float, z_top: float, bins: int = 10) -> list:

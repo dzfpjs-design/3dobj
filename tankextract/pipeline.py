@@ -47,6 +47,7 @@ class RunOptions:
     precision_m: float = 0.50  # sagitta of large shells; small parts are kept
     max_faces: int = 2000  # per-object polygon budget used when quality == "budget"
     quality: str = "full"  # full keeps segments; budget retessellates shells only
+    tube_sides: int | None = None  # None keeps a round section; 4 is an explicit square-ish option
     name_prefix: str = "LA"
     material_name: str = "Standard"
     model_origin: tuple[float, float, float] | None = None
@@ -205,8 +206,9 @@ def _detect_block(block: Block, options: RunOptions, config: DetectConfig, osgco
                 resolved = _resolve_existing(name, child, names)
                 if resolved and resolved not in seen:
                     children.append(resolved)
-        if children:
-            # This file still has a finer level on disk. Do not use its mesh.
+        if not use_tile_mesh(children):
+            # A parent is skipped when its own finer child is on disk, so the
+            # two levels are not both meshed. A childless file is a real leaf.
             queue.extend(children)
             continue
         for mesh in contents.meshes:
@@ -523,6 +525,11 @@ def _resolve_existing(parent: str, child: str, names: set[str]) -> str | None:
     return None
 
 
+def use_tile_mesh(children_on_disk: list) -> bool:
+    """Mesh this tile only when no finer child file is present."""
+    return not children_on_disk
+
+
 def _select_tiles(names: list[str], lod: str) -> list[str]:
     groups: dict[str, list[str]] = {}
     for name in names:
@@ -672,6 +679,7 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
         "precision_m": options.precision_m,
         "max_faces": options.max_faces,
         "quality": options.quality,
+        "tube_sides": options.tube_sides,
         "material_name": options.material_name,
         "segments": options.segments,
         "pipes": "measured_wall_pipes_only" if options.pipes else "omitted_for_laser",

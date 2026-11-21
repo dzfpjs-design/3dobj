@@ -141,7 +141,8 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 | `--quality` | `budget`（命令行默认）只降低罐体/球壳分段；`full` 保持 `--segments`。库函数默认仍是 `full` | budget |
 | `--max-faces` | `budget` 时一座导出模型（父级空物体及其网格）的多边形预算。壳先减；某个部件单独超预算则保留并写出多边形数、三角数和原因 | 2000 |
 | `--name-prefix` | 导出名前缀。`Tank_007` → `LA0007`，原编号留在 `name_map.csv` 和 FBX 的 `tank_id` | LA |
-| `--material` | 材质名称。Blender 4.2 写出同名 Phong/Lambert。FBX 里没有 3ds Max 的 Standard 材质类。导入 Max 后运行 `packaging/max/convert_to_standard.ms`（Scripting > Run Script）。该脚本没有在 3ds Max 里跑过 | Standard |
+| `--material` | 材质名称。Blender 4.2 写出同名 Phong/Lambert。FBX 里没有 3ds Max 的 Standard 材质类 | Standard |
+| `--tube-sides` | 圆管断面边数。省略时 budget 栏杆 8 边、full 12 边。4 边要显式写出，断面接近方杆，不是默认，也不表示 2000 面已经达到 | 省略 |
 | `--local-offset` | FBX 用局部坐标 | 关闭（顶点写绝对坐标） |
 | `--merge` / `--no-merge` | 是否另存 `tanks_all.fbx` | 保存 |
 | `--no-blender` | 只检测、不导出 FBX | 关闭 |

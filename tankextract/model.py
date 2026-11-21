@@ -27,6 +27,9 @@ class Tank:
     base_ring: dict | None = None
     spiral_stair: dict | None = None
     handrail_height: float | None = None
+    # Absolute roof-plate height in 10 radial bins. Used to judge a bridge end.
+    # Independent of the cone drawn from a handrail-lowered eave.
+    roof_profile_z: list | None = None
     # Spherical tank: {"center_z", "radius", "legs": [azimuth deg], "leg_rho", "leg_radius"}.
     sphere: dict | None = None
     name: str = ""

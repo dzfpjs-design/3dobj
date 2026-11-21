@@ -36,6 +36,7 @@ def main() -> None:
         "precision_m": spec.get("precision_m"),
         "max_faces": spec.get("max_faces"),
         "quality": spec.get("quality") or "full",
+        "tube_sides": spec.get("tube_sides"),
         "model_origin": spec.get("model_origin"),
         "material_name": material_name,
     }
@@ -333,7 +334,8 @@ def _note_model(group, merged, limits, report) -> None:
     if exceeded:
         reason = (
             f"model has {polygons} polygons / {triangles} triangles, over {int(limit)}. "
-            "Shell segments are at the chord or the 16-side floor, and budget tubes are 4-sided. "
+            "Shell segments are at the chord or the 16-side floor. "
+            "Tubes keep a round section unless --tube-sides is set. "
             "Treads, rails, legs and openings were kept, so this is the remaining count."
         )
     report.setdefault("models", []).append({
@@ -416,11 +418,7 @@ def _part_pieces(parts, group: str, limits=None) -> list:
             rest = f"{rest}_door"
         rest = _latin(rest)
         if kind == "rod":
-            # Budget keeps every bar, with a 4-side section instead of 8 or 12.
-            if (limits or {}).get("quality") == "budget":
-                segs = 4
-            else:
-                segs = 12 if part["radius"] > 0.1 else 8
+            segs = _section_sides(limits, 12 if part["radius"] > 0.1 else 8)
             out.append((rest, *_rod(part["p0"], part["p1"], part["radius"], segs)))
         elif kind == "beam":
             out.append((rest, *_beam(part["p0"], part["p1"], part["width"], part["depth"])))
@@ -438,9 +436,7 @@ def _part_pieces(parts, group: str, limits=None) -> list:
                 segs = max(12, min(segs, cap))
             out.append((rest, *_cylinder(cx, cy, part["z0"], part["z1"], part["radius"], segs, caps=True)))
         elif kind == "tube":
-            segs = int(part.get("segments", 6))
-            if (limits or {}).get("quality") == "budget":
-                segs = min(segs, 4)
+            segs = _section_sides(limits, int(part.get("segments", 6)))
             out.append((rest, *_tube_mesh(part["points"], part["radius"], segs, bool(part.get("closed")))))
     return out
 
@@ -775,12 +771,12 @@ def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps, plan=None) ->
         openings.append((float(gap["azimuth_deg"]) % 360.0, half))
     budget = bool(plan and plan.get("quality") == "budget")
     circ = 12 if budget else 16
-    radial = 4 if budget else 6
+    radial = _section_sides(plan, 8 if budget else 12)
     pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height, ring_r, pipe_r, openings, circ=circ, radial=radial)))
     pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height * 0.5, ring_r, pipe_r * 0.8, openings, circ=circ, radial=radial)))
     circ_len = 2.0 * math.pi * ring_r
     count = max(4, int(circ_len / 1.5))
-    post_sides = 4 if budget else 6
+    post_sides = _section_sides(plan, 8)
     for index in range(count):
         deg = 360.0 * index / count
         if any(_angle_delta(deg, center) <= half for center, half in openings):
@@ -798,7 +794,7 @@ def _append_girders(pieces, cx, cy, radius, girders, plan=None) -> None:
     """
     budget = bool(plan and plan.get("quality") == "budget")
     circ = 12 if budget else 16
-    radial = 4 if budget else 6
+    radial = _section_sides(plan, 8 if budget else 12)
     for index, girder in enumerate(girders or [], start=1):
         diameter = girder.get("diameter")
         if not diameter:
@@ -810,6 +806,14 @@ def _append_girders(pieces, cx, cy, radius, girders, plan=None) -> None:
             f"wind_girder_{index:02d}",
             *_ring_pipe(cx, cy, float(girder["z"]), ring_r, pipe_r, [], circ=circ, radial=radial),
         ))
+
+
+def _section_sides(limits, default: int) -> int:
+    """Pipe/bar sides. None keeps ``default`` (round). 4 is an explicit coarse option."""
+    raw = (limits or {}).get("tube_sides")
+    if not raw:
+        return int(default)
+    return max(4, min(16, int(raw)))
 
 
 def _angle_delta(a, b) -> float:

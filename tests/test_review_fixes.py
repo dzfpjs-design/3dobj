@@ -310,29 +310,39 @@ def test_a_local_spike_is_not_a_ring_rail():
     assert _upper_ring_coverage({"all": local}, np.zeros(2), radius, 11.5, 12.5) < 200
 
 
-def test_bridge_on_the_cone_meets_the_roof_without_a_platform():
+def test_bridge_end_is_compared_with_the_measured_roof_not_a_cutoff():
     tank = _Tank("Tank_001", 0, 0, 3.0)
     tank.z_base = 50.0
     tank.wall_height = 10.0
     tank.total_height = 11.0
     tank.roof_type = "cone"
+    # Measured plate is 0.37 m above the straight cone at this radius.
+    tank.roof_profile_z = [62.5, 62.4, 62.39, 62.3, 62.2, 62.1, 62.0, 61.9, 61.8, 61.7]
     conn = _Conn()
-    conn.x0, conn.y0, conn.z0 = 2.8, 0.0, 60.067
+    conn.x0, conn.y0, conn.z0 = 0.91, 0.0, 62.48
     seat_walkway_ends([tank, _Tank("Tank_002", 20, 0, 5)], [conn])
     ends = {row["end"]: row for row in conn.junctions}
-    assert ends["a"]["platform"] == "meets_roof"
-    assert abs(ends["a"]["dz_m"]) < 0.05
-    assert ends["b"]["platform"] == "not_measured"
+    assert ends["a"]["platform"] == "not_measured"
+    assert ends["a"]["confidence"] == "measured_roof_profile"
+    assert abs(ends["a"]["dz_measured_m"] - (62.48 - 62.3)) < 0.02
+    assert ends["a"]["dz_formula_m"] > 0.3
+    assert ends["a"]["relation"] == "deck_above_measured_roof"
 
 
-def test_budget_keeps_a_rod_and_uses_fewer_sides():
+def test_budget_tubes_stay_round_unless_sides_are_set():
     mesh = _module()
-    part = {"name": "T_brace", "type": "rod", "p0": [0, 0, 0], "p1": [0, 0, 2], "radius": 0.04}
-    full = mesh._part_pieces([part], "T", {"quality": "full"})
-    budget = mesh._part_pieces([part], "T", {"quality": "budget"})
-    assert full and budget
-    assert len(budget[0][2]) < len(full[0][2])
-    assert len(budget[0][2]) >= 6
+    part = {"name": "T_rail", "type": "tube", "points": [[0, 0, 0], [1, 0, 0]], "radius": 0.025, "segments": 8}
+    default = mesh._part_pieces([part], "T", {"quality": "budget"})
+    coarse = mesh._part_pieces([part], "T", {"quality": "budget", "tube_sides": 4})
+    assert len(coarse[0][2]) < len(default[0][2])
+    assert len(default[0][2]) >= 8
+
+
+def test_parent_tile_is_not_meshed_when_its_child_is_present():
+    from tankextract.pipeline import use_tile_mesh
+
+    assert use_tile_mesh([]) is True
+    assert use_tile_mesh(["Tile_L22_child.osgb"]) is False
 
 
 def test_inside_the_shell_is_not_a_platform_connection():

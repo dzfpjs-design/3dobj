@@ -172,19 +172,31 @@ def _junctions(conn, by_name) -> list[dict]:
             "platform": "not_measured",
         }
         if platform is None and _has_roof(tank):
-            z_roof = _roof_z_at(tank, dist)
-            dz = z - z_roof
-            row["roof_z_m"] = round(z_roof, 3)
+            formula = _roof_z_at(tank, dist)
+            measured = _profile_z_at(tank, dist)
+            dz_formula = z - formula
+            row["roof_z_formula_m"] = round(formula, 3)
             row["deck_z_m"] = round(z, 3)
-            row["dz_m"] = round(dz, 3)
-            row["radial_outside_m"] = round(max(0.0, dist - tank.radius), 3)
-            row["junction_gap_m"] = round(abs(dz), 3)
-            # On the cone or dome itself. Not a separate platform, and not invented.
-            if abs(dz) <= 0.30:
-                row["platform"] = "meets_roof"
-                row["confidence"] = "measured"
+            row["dz_formula_m"] = round(dz_formula, 3)
+            row["radial_inside_m"] = round(tank.radius - dist, 3)
+            if measured is None:
+                row["confidence"] = "formula_only"
+                row["dz_m"] = round(dz_formula, 3)
+                row["relation"] = "formula_only"
             else:
-                row["confidence"] = "roof_mismatch"
+                dz = z - measured
+                row["roof_z_measured_m"] = round(measured, 3)
+                row["dz_measured_m"] = round(dz, 3)
+                row["dz_m"] = round(dz, 3)
+                row["confidence"] = "measured_roof_profile"
+                # The number is the gap. It is not a pass/fail cut, and it does not add a platform.
+                if abs(dz) <= 0.15:
+                    row["relation"] = "deck_on_measured_roof"
+                elif dz > 0:
+                    row["relation"] = "deck_above_measured_roof"
+                else:
+                    row["relation"] = "deck_below_measured_roof"
+            row["platform"] = "not_measured"
         if platform:
             radius = float(platform["radius"])
             level = platform.get("z")
@@ -211,6 +223,21 @@ def _junctions(conn, by_name) -> list[dict]:
 
 def _has_roof(tank) -> bool:
     return all(hasattr(tank, name) for name in ("z_base", "wall_height", "total_height", "roof_type", "radius"))
+
+
+def _profile_z_at(tank, dist: float) -> float | None:
+    profile = getattr(tank, "roof_profile_z", None) or []
+    if not profile or tank.radius <= 0:
+        return None
+    u = min(max(dist, 0.0) / float(tank.radius), 0.999)
+    index = min(int(u * len(profile)), len(profile) - 1)
+    if profile[index] is not None:
+        return float(profile[index])
+    for step in range(1, len(profile)):
+        for neighbor in (index - step, index + step):
+            if 0 <= neighbor < len(profile) and profile[neighbor] is not None:
+                return float(profile[neighbor])
+    return None
 
 
 def _roof_z_at(tank, dist: float) -> float:
