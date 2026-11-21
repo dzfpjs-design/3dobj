@@ -29,6 +29,7 @@ def build_cli_args(
     model_origin: str = "",
     quality: str | None = None,
     corrections: str = "",
+    junction_rule: str = "none",
 ) -> list[str]:
     """Arguments passed to ``tankextract.cli.main`` (no program name)."""
     args = ["--input", input_path, "--output", output_path]
@@ -54,6 +55,8 @@ def build_cli_args(
     text = exclude.replace("，", ",").strip()
     if corrections.strip():
         args.extend(["--corrections", corrections.strip()])
+    if junction_rule and junction_rule != "none":
+        args.extend(["--junction-rule", junction_rule])
     if text:
         args.extend(["--exclude", text])
     return args
@@ -86,6 +89,7 @@ def launch() -> None:
     origin_var = tk.StringVar()
     quality_var = tk.StringVar(value="budget")
     corrections_var = tk.StringVar()
+    junction_var = tk.StringVar(value="none")
     blender = resolve_blender(None)
     status = tk.StringVar(value="Blender: " + (blender or "未找到"))
 
@@ -148,6 +152,8 @@ def launch() -> None:
     ttk.Entry(grid, textvariable=origin_var, width=28).grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
     ttk.Label(grid, text="人工校正 JSON（空=不改）").grid(row=4, column=0, sticky="w")
     ttk.Entry(grid, textvariable=corrections_var, width=28).grid(row=4, column=1, columnspan=3, sticky="w", padx=4)
+    ttk.Label(grid, text="桥端规则（默认不贴屋面）").grid(row=5, column=0, sticky="w")
+    ttk.Combobox(grid, textvariable=junction_var, values=("none", "seat_to_measured_roof"), width=22, state="readonly").grid(row=5, column=1, columnspan=2, sticky="w", padx=4)
 
     ttk.Label(frame, textvariable=status).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
     log = scrolledtext.ScrolledText(frame, height=16, wrap="word")
@@ -222,6 +228,7 @@ def launch() -> None:
             model_origin=origin_var.get(),
             quality=quality_var.get(),
             corrections=corrections_var.get(),
+            junction_rule=junction_var.get(),
         )
         log.delete("1.0", "end")
         append("命令: tankextract " + " ".join(argv) + "\n\n")

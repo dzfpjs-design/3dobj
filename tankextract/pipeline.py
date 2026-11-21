@@ -19,7 +19,7 @@ from tankextract.connectors import find_connectors
 from tankextract.grounding import ground_only
 from tankextract.structures import collect_faces, detect_structures, tank_boxes
 from tankextract.corrections import apply_corrections, write_open_corrections
-from tankextract.deliverable import _junctions, assign_export_names, handrail_gaps, seat_walkway_ends
+from tankextract.deliverable import _junctions, apply_junction_rule, assign_export_names, handrail_gaps, seat_walkway_ends
 from tankextract.sidecar import write_connectors, write_ground_report, write_name_map, write_sidecars, write_structures
 from tankextract.treefilter import TreeFilterConfig, colour_stats, judge, sample_colours
 from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv, resource_path
@@ -62,6 +62,7 @@ class RunOptions:
     exclude: tuple[str, ...] = ()  # tank IDs (e.g. Tank_007) checked by eye and dropped; other IDs are kept
     tree_filter: bool = True  # drop tree crowns (foliage-green texture + irregular geometry), offline
     corrections: dict | None = None  # explicit manual/assumed sizes; never filled with defaults
+    junction_rule: str = "none"  # seat_to_measured_roof is opt-in; default keeps the measured deck
 
 
 def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
@@ -136,6 +137,9 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
     seat_walkway_ends(tanks, connectors)
     name_rows = assign_export_names(tanks, connectors, structures, options.name_prefix)
     apply_corrections(tanks, connectors, options.corrections, log)
+    seated = apply_junction_rule(tanks, connectors, options.junction_rule)
+    if seated:
+        log(f"  已按显式规则 {options.junction_rule} 把 {seated} 个桥端放到实测屋面板，原桥面高程保留")
     by_name = {tank.name: tank for tank in tanks}
     for conn in connectors:
         conn.junctions = _junctions(conn, by_name)

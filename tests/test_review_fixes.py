@@ -493,6 +493,70 @@ def test_corrections_do_not_invent_a_missing_size():
     assert conn.z0 == 62.4 and conn.end_sources["a"] == "assumed"
 
 
+def test_local_deck_is_kept_apart_from_the_straight_line_and_the_roof():
+    from tankextract.connectors import _local_deck_z
+    from tankextract.deliverable import apply_junction_rule, classify_end_fit
+
+    s = np.array([3.2, 3.4, 3.6, 3.8, 6.0, 6.2])
+    z = np.array([62.15, 62.12, 62.18, 62.20, 63.4, 63.5])
+    lateral = np.zeros(len(s))
+    near = np.ones(len(s), dtype=bool)
+    local = _local_deck_z(3.0, 1.0, s, lateral, z, near, 0.0, 0.6)
+    assert abs(local - 62.16) < 0.05
+    assert classify_end_fit(62.40, local, 62.10) == "line_bias"
+    assert classify_end_fit(63.4, local, 62.10) == "local_conflict"
+    assert classify_end_fit(62.65, 62.60, 62.10) == "source_step"
+    assert classify_end_fit(62.12, 62.15, 62.10) == "within_0.15_not_a_pass"
+    tank = _Tank("Tank_001", 0, 0, 3.0)
+    tank.z_base = 50.0
+    tank.wall_height = 10.0
+    tank.total_height = 12.0
+    tank.roof_type = "cone"
+    tank.roof_profile_z = [62.1] * 10
+    conn = _Conn()
+    conn.end_sources = {}
+    conn.x0, conn.y0, conn.z0 = 3.0, 0.0, 62.6
+    assert apply_junction_rule([tank], [conn], "none") == 0
+    assert conn.z0 == 62.6
+    assert apply_junction_rule([tank], [conn], "seat_to_measured_roof") == 1
+    assert abs(conn.z0 - 62.1) < 0.05
+    assert conn.z0_before_rule == 62.6
+    assert conn.end_sources["a"] == "rule:seat_to_measured_roof"
+
+
+def test_kept_detail_on_tank_031_already_exceeds_2000():
+    from tankextract.deliverable import detail_floor
+
+    # Counts from the 1.3.6 LA0002 export. Treads, rails and round tubes only.
+    rows = [
+        {"object": "LA0002_handrail", "polygons": 562},
+        {"object": "LA0002_stair_treads", "polygons": 516},
+        {"object": "LA0002_stair_rail", "polygons": 256},
+        {"object": "LA0002_body", "polygons": 160},
+        {"object": "LA0002_stair_stringer_inner", "polygons": 126},
+        {"object": "LA0002_stair_stringer_outer", "polygons": 126},
+        {"object": "LA0002_wind_girder_01", "polygons": 96},
+        {"object": "LA0002_wind_girder_02", "polygons": 96},
+        {"object": "LA0002_platform_rail_top", "polygons": 128},
+        {"object": "LA0002_platform_rail_mid", "polygons": 128},
+        {"object": "LA0002_platform_rail_posts", "polygons": 90},
+    ]
+    floor = detail_floor(rows)
+    assert floor["above_2000"]
+    assert floor["polygons"] > 2000
+    assert floor["polygons"] == 2124
+
+
+def test_post_keeps_a_round_section_without_end_caps():
+    mesh = _module()
+    capped = mesh._rod((0, 0, 0), (0, 0, 1), 0.025, 8, caps=True)
+    open_post = mesh._rod((0, 0, 0), (0, 0, 1), 0.025, 8, caps=False)
+    assert len(capped[1]) == 10
+    assert len(open_post[1]) == 8
+    radii = [math.hypot(v[0], v[1]) for v in open_post[0]]
+    assert max(radii) < 0.03 and min(radii) > 0.02
+
+
 def test_missing_walkway_rail_is_not_filled_with_the_site_median():
     from types import SimpleNamespace
 

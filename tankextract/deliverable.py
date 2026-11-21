@@ -208,6 +208,18 @@ def _junctions(conn, by_name) -> list[dict]:
                     row["relation"] = "deck_above_measured_roof"
                 else:
                     row["relation"] = "deck_below_measured_roof"
+                fit = (getattr(conn, "end_fit", None) or {}).get(end) or {}
+                kind = classify_end_fit(fit.get("line_z"), fit.get("local_z"), measured)
+                row["deck_z_line_m"] = fit.get("line_z")
+                row["deck_z_local_m"] = fit.get("local_z")
+                row["deck_z_used"] = fit.get("used") or "model"
+                row["fit_class"] = kind
+                row["dz_line_m"] = None if fit.get("line_z") is None else round(float(fit["line_z"]) - measured, 3)
+                row["dz_local_m"] = None if fit.get("local_z") is None else round(float(fit["local_z"]) - measured, 3)
+                # Not applied. A caller can opt in with --junction-rule seat_to_measured_roof.
+                source = (getattr(conn, "end_sources", None) or {}).get(end, "measured")
+                row["seat_rule"] = source if str(source).startswith("rule") else "off"
+                row["seat_target_z_m"] = round(measured, 3)
             row["platform"] = "not_measured"
         if platform:
             radius = float(platform["radius"])
@@ -231,6 +243,65 @@ def _junctions(conn, by_name) -> list[dict]:
             row["confidence"] = "measured" if meets else "measured_miss"
         rows.append(row)
     return rows
+
+
+def apply_junction_rule(tanks, connectors, rule: str | None) -> int:
+    """Seat walkway ends on the measured roof plate only when the rule is named.
+
+    The measured deck height is kept on the connector as ``z_before_rule``.
+    The default rule is off, so estimated geometry is not built.
+    """
+    if rule != "seat_to_measured_roof":
+        return 0
+    by_name = {tank.name: tank for tank in tanks}
+    moved = 0
+    for conn in connectors:
+        if getattr(conn, "kind", "") != "walkway":
+            continue
+        for end in ("a", "b"):
+            tank = by_name.get(conn.tank_a if end == "a" else conn.tank_b)
+            if tank is None or not _has_roof(tank):
+                continue
+            platform = ((getattr(tank, "accessories", None) or {}).get("roof") or {}).get("platform")
+            if platform:
+                continue
+            x = conn.x0 if end == "a" else conn.x1
+            y = conn.y0 if end == "a" else conn.y1
+            dist = math.hypot(x - tank.center_x, y - tank.center_y)
+            roof = _profile_z_at(tank, dist)
+            if roof is None:
+                continue
+            current = conn.z0 if end == "a" else conn.z1
+            if end == "a":
+                conn.z0_before_rule = current
+                conn.z0 = float(roof)
+            else:
+                conn.z1_before_rule = current
+                conn.z1 = float(roof)
+            conn.end_sources[end] = "rule:seat_to_measured_roof"
+            moved += 1
+    return moved
+
+
+def classify_end_fit(line_z, local_z, roof_z) -> str:
+    """Separate a bad straight-line fit from a deck the mesh really leaves above the plate.
+
+    ``within_0.15_not_a_pass`` only means the two measured surfaces are close.
+    It is not a completed joint.
+    """
+    if local_z is not None and line_z is not None and abs(local_z - line_z) > 0.25:
+        return "local_conflict"
+    if roof_z is None:
+        return "no_roof"
+    used = local_z if local_z is not None else line_z
+    if used is None:
+        return "not_split"
+    if local_z is not None and line_z is not None and abs(local_z - line_z) > 0.08:
+        if abs(local_z - roof_z) + 0.05 < abs(line_z - roof_z):
+            return "line_bias"
+    if abs(used - roof_z) <= 0.15:
+        return "within_0.15_not_a_pass"
+    return "source_step"
 
 
 def _has_roof(tank) -> bool:
@@ -394,6 +465,33 @@ def tessellation_segments(
     """Segment count a shell uses. In budget mode this follows ``precision_m``."""
     chord = 0.50 if precision_m is None else precision_m
     return plan_shell(radius, explicit, max_faces, roof, quality, chord)["segments"]
+
+
+_DETAIL_KEYS = ("tread", "flight", "rail", "handrail", "girder", "stringer", "leg_", "opening", "brace", "post")
+
+
+def detail_floor(face_counts: list[dict]) -> dict:
+    """Polygons in parts that stay when treads, rails, legs, openings and round tubes are kept.
+
+    The shell can be reduced separately. This sum is the floor under that choice.
+    """
+    kept = []
+    for row in face_counts:
+        name = str(row.get("object") or "")
+        if any(key in name for key in _DETAIL_KEYS):
+            kept.append({"object": name, "polygons": int(row.get("polygons") or 0)})
+    total = sum(item["polygons"] for item in kept)
+    return {
+        "polygons": total,
+        "parts": len(kept),
+        "above_2000": total > 2000,
+        "reason": (
+            "treads, rails, legs, openings and round tubes are kept; "
+            "their polygons already exceed 2000"
+            if total > 2000 else
+            "kept detail is within 2000 before the shell is added"
+        ),
+    }
 
 
 def face_budget_row(name: str, polygons: int, limit: int | None) -> dict:

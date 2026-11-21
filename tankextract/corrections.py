@@ -82,19 +82,41 @@ def apply_corrections(tanks, connectors, data: dict | None, log=print) -> None:
         for end, spec in ends.items():
             if end not in ("a", "b") or not isinstance(spec, dict):
                 continue
+            rule = str(spec.get("rule") or "")
+            if rule == "seat_to_measured_roof" and spec.get("z") is None:
+                from tankextract.deliverable import _has_roof, _profile_z_at
+
+                tank_name = conn.tank_a if end == "a" else conn.tank_b
+                tank = next((item for item in tanks if item.name == tank_name or getattr(item, "export_name", "") == tank_name), None)
+                if tank is None or not _has_roof(tank):
+                    log(f"  校正 {conn.name} 端 {end}：没有屋面剖面，不贴屋面")
+                    continue
+                x = conn.x0 if end == "a" else conn.x1
+                y = conn.y0 if end == "a" else conn.y1
+                import math
+                dist = math.hypot(x - tank.center_x, y - tank.center_y)
+                roof = _profile_z_at(tank, dist)
+                if roof is None:
+                    log(f"  校正 {conn.name} 端 {end}：屋面剖面为空，不贴屋面")
+                    continue
+                spec = dict(spec)
+                spec["z"] = roof
             if spec.get("z") is None:
-                log(f"  校正 {conn.name} 端 {end}：没有 z，不移动")
+                log(f"  校正 {conn.name} 端 {end}：没有 z，也没有 seat_to_measured_roof，不移动")
                 continue
+            current = conn.z0 if end == "a" else conn.z1
             if end == "a":
+                conn.z0_before_rule = current
                 conn.z0 = float(spec["z"])
             else:
+                conn.z1_before_rule = current
                 conn.z1 = float(spec["z"])
             if spec.get("x") is not None and spec.get("y") is not None:
                 if end == "a":
                     conn.x0, conn.y0 = float(spec["x"]), float(spec["y"])
                 else:
                     conn.x1, conn.y1 = float(spec["x"]), float(spec["y"])
-            conn.end_sources[end] = source
+            conn.end_sources[end] = f"{source}:{rule}" if rule else source
             log(f"  校正 {conn.name} 端 {end}：按 {source} 设置端点高程")
         height = _number(record, "handrail_height_m")
         if height is not None:
@@ -132,15 +154,20 @@ def write_open_corrections(path: Path, tanks, connectors, rail_reference_m: floa
             inside = row.get("inside_shell_m")
             if dz is None and inside is None:
                 continue
-            if (dz is not None and abs(dz) > 0.15) or (inside is not None and abs(inside) > 0.15):
+            if (dz is not None and abs(dz) > 0.15) or (inside is not None and abs(inside) > 0.15) or row.get("fit_class") == "source_step":
                 ends[row["end"]] = {
                     "z": None,
+                    "rule": None,
                     "measured_deck_z_m": row.get("deck_z_m"),
+                    "deck_z_line_m": row.get("deck_z_line_m"),
+                    "deck_z_local_m": row.get("deck_z_local_m"),
                     "measured_roof_z_m": row.get("roof_z_measured_m"),
                     "dz_measured_m": dz,
+                    "fit_class": row.get("fit_class"),
                     "inside_shell_m": inside,
                     "landing": row.get("landing"),
                     "end_stop": row.get("end_stop"),
+                    "rule_hint": "要贴到已测屋面，把 rule 写成 seat_to_measured_roof 并设 source 为 manual。不要手填已有的 z。默认不贴。",
                 }
         supports = None
         note = ""

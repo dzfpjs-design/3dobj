@@ -39,7 +39,8 @@ class Connector:
     fill: float
     supports: list[dict] = field(default_factory=list)  # x, y, z_bottom, z_top, size
     end_stops: dict = field(default_factory=dict)  # why each end stopped: roof plate, faces ended, ...
-    end_sources: dict = field(default_factory=dict)  # measured, or manual / assumed from a corrections file
+    end_sources: dict = field(default_factory=dict)  # measured, rule, or manual / assumed
+    end_fit: dict = field(default_factory=dict)  # line_z vs local deck faces; the model uses local when it exists
     handrail_height_measured: float | None = None
     block: str = ""
     srs: str = ""
@@ -183,8 +184,9 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
     info.update(extend_a=s0 - s_lo, extend_b=s_hi - s1, end_stop_a=stop_a, end_stop_b=stop_b)
     # Roof-to-roof only: the deck must reach each roof at (or above) its eave.
     # Pipe racks and side platforms run between tanks lower down.
-    z_a, z_b = float(np.polyval(coef, s_lo)), float(np.polyval(coef, s_hi))
-    info.update(z_a=z_a, z_b=z_b, eave_a=ea, eave_b=eb)
+    z_line_a, z_line_b = float(np.polyval(coef, s_lo)), float(np.polyval(coef, s_hi))
+    z_a, z_b = z_line_a, z_line_b
+    info.update(z_line_a=z_line_a, z_line_b=z_line_b, eave_a=ea, eave_b=eb)
     # 0.5 m tolerance: sloped walkways can land just under a roof rim (E 025-028 lands 0.45 m
     # below 028's eave); E pipe racks sit >= 0.6 m below the eaves.
     if z_a < ea - 0.5 or z_b < eb - 0.5:
@@ -279,16 +281,27 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
                 "axis_deg": float(np.degrees(np.arctan2(u[1], u[0]))),
             })
         info["support_span"] = float(np.median(span))
+    local_a = _local_deck_z(s_lo, 1.0, s, t, z, near, t_c, width / 2.0)
+    local_b = _local_deck_z(s_hi, -1.0, s, t, z, near, t_c, width / 2.0)
+    z_a, used_a = _choose_end_z(z_line_a, local_a)
+    z_b, used_b = _choose_end_z(z_line_b, local_b)
+    info.update(z_a=z_a, z_b=z_b, z_local_a=local_a, z_local_b=local_b)
     p0 = pa + u * s_lo + v * t_c
     p1 = pa + u * s_hi + v * t_c
     conn = Connector(
         name="", kind=kind, tank_a=getattr(a, "name", ""), tank_b=getattr(b, "name", ""),
-        x0=float(p0[0]), y0=float(p0[1]), z0=float(np.polyval(coef, s_lo)),
-        x1=float(p1[0]), y1=float(p1[1]), z1=float(np.polyval(coef, s_hi)),
+        x0=float(p0[0]), y0=float(p0[1]), z0=float(z_a),
+        x1=float(p1[0]), y1=float(p1[1]), z1=float(z_b),
         width=width, depth=depth, handrail_height=rail, fill=float(fill), supports=supports,
         rail_sides=rail_sides, rail_source="measured" if rail is not None else "",
         end_stops={"a": stop_a, "b": stop_b},
         end_sources={"a": "measured", "b": "measured"},
+        end_fit={
+            "a": {"line_z": round(z_line_a, 3), "local_z": None if local_a is None else round(local_a, 3),
+                  "used": used_a},
+            "b": {"line_z": round(z_line_b, 3), "local_z": None if local_b is None else round(local_b, 3),
+                  "used": used_b},
+        },
     )
     info["reason"] = "ok"
     return conn, info
@@ -309,6 +322,44 @@ def _top_level(z: np.ndarray, area: np.ndarray, bin_size: float = 0.1) -> float:
     top = good.max()
     sel = np.abs(idx - top) <= 1
     return float(np.median(z[sel]))
+
+
+def _choose_end_z(line_z: float, local_z):
+    """Use the local deck when it agrees with the span line.
+
+    A band more than 25 cm off the line is a different surface in the same
+    window. Keep the line, and keep the local value for the report.
+    """
+    if local_z is None:
+        return float(line_z), "line"
+    if abs(float(local_z) - float(line_z)) <= 0.25:
+        return float(local_z), "local"
+    return float(line_z), "line_kept"
+
+
+def _local_deck_z(s_wall: float, gap_sign: float, s, lateral, z, near, t_c: float, half_w: float):
+    """Median height of deck faces in the 1.2 m of walkway just outside the wall.
+
+    This is the landing the mesh actually has. It is not the straight line
+    fitted across the whole span, and it is not the roof plate.
+    """
+    lo, hi = sorted((s_wall, s_wall + gap_sign * 1.2))
+    sel = near & (s >= lo) & (s <= hi) & (np.abs(lateral - t_c) < half_w + 0.15)
+    if int(sel.sum()) < 4:
+        return None
+    zz = z[sel]
+    # The densest 0.20 m band is the deck. A curb or rail in the same window
+    # must not pull the landing up to a height the plates do not have.
+    lo_z, hi_z = float(zz.min()), float(zz.max())
+    edges = np.arange(lo_z, hi_z + 0.20, 0.20)
+    if len(edges) < 2:
+        return float(np.median(zz))
+    hist, edges = np.histogram(zz, bins=edges)
+    peak = int(np.argmax(hist))
+    band = (zz >= edges[peak]) & (zz < edges[peak + 1] + 1e-9)
+    if int(band.sum()) < 3:
+        return float(np.median(zz))
+    return float(np.median(zz[band]))
 
 
 def _measured_roof_z(tank, rho: float) -> float | None:

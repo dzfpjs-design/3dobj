@@ -130,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
              "理由写入 tree_filter_report.csv（完全离线，不用任何在线服务）",
     )
     parser.add_argument(
+        "--junction-rule", default="none", choices=("none", "seat_to_measured_roof"),
+        help="桥端修正规则，默认 none：端点用罐壁外实测桥面，不贴屋面。"
+             "seat_to_measured_roof 才把端点放到已测屋面板，并标记来源；不手填标高",
+    )
+    parser.add_argument(
         "--corrections", default=None,
         help="人工校正 JSON。只采用 source 为 manual 或 assumed 且写了数值的条目；"
              "空值、unmeasured 和不写 source 的条目不建护栏、不移动桥端、不加柱",
@@ -203,6 +208,7 @@ def _options_from_args(args) -> RunOptions:
         tree_filter=not args.no_tree_filter,
         exclude=tuple(n for item in args.exclude for n in item.split(",") if n.strip()),
         corrections=_load_corrections(args.corrections),
+        junction_rule=args.junction_rule,
     )
 
 

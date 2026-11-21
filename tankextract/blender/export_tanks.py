@@ -419,7 +419,10 @@ def _part_pieces(parts, group: str, limits=None) -> list:
         rest = _latin(rest)
         if kind == "rod":
             segs = _section_sides(limits, 12 if part["radius"] > 0.1 else 8)
-            out.append((rest, *_rod(part["p0"], part["p1"], part["radius"], segs)))
+            # Post ends sit in the rail or the deck. Dropping those two caps
+            # keeps the round section and does not remove the post.
+            caps = "post" not in rest
+            out.append((rest, *_rod(part["p0"], part["p1"], part["radius"], segs, caps=caps)))
         elif kind == "beam":
             out.append((rest, *_beam(part["p0"], part["p1"], part["width"], part["depth"])))
         elif kind == "box":
@@ -485,8 +488,8 @@ def _frame(p0, p1):
     return ax, e1, e2
 
 
-def _rod(p0, p1, radius, segs):
-    """Capped cylinder between two points, outward normals."""
+def _rod(p0, p1, radius, segs, caps=True):
+    """Cylinder between two points, outward normals. Section sides stay ``segs``."""
     _ax, e1, e2 = _frame(p0, p1)
     verts = []
     for p in (p0, p1):
@@ -498,8 +501,9 @@ def _rod(p0, p1, radius, segs):
     for k in range(segs):
         nxt = (k + 1) % segs
         faces.append((k, nxt, segs + nxt, segs + k))
-    faces.append(tuple(range(segs - 1, -1, -1)))
-    faces.append(tuple(range(segs, 2 * segs)))
+    if caps:
+        faces.append(tuple(range(segs - 1, -1, -1)))
+        faces.append(tuple(range(segs, 2 * segs)))
     return verts, faces
 
 
@@ -784,7 +788,7 @@ def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps, plan=None) ->
         ang = math.radians(deg)
         x = cx + ring_r * math.cos(ang)
         y = cy + ring_r * math.sin(ang)
-        pieces.append(("handrail", *_rod((x, y, z_deck), (x, y, z_deck + height), pipe_r, post_sides)))
+        pieces.append(("handrail", *_rod((x, y, z_deck), (x, y, z_deck + height), pipe_r, post_sides, caps=False)))
 
 
 def _append_girders(pieces, cx, cy, radius, girders, plan=None) -> None:
