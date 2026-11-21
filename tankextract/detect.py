@@ -820,13 +820,12 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
         if fit["ok"]:
             roof = fit["roof"]
             wall_top = fit["wall_top"]
-            if z_top - wall_top > 0.3:
-                # A ring rail goes around the tank. A local vent or bridge end
-                # does not, and is not turned into a handrail.
-                if _upper_ring_coverage(samples, center, radius, wall_top + 0.15, z_top) >= 200.0:
-                    handrail = float(z_top - wall_top)
-                z_top = wall_top
-                wall_h = z_top - z_base
+            profile_z = info.get("roof_profile_z") or []
+            plate_z = next((value for value in reversed(profile_z) if value is not None), None)
+            handrail, z_top = _handrail_from_band(
+                samples, center, radius, wall_top, z_top, plate_z=plate_z,
+            )
+            wall_h = z_top - z_base
             rise = 0.0 if roof == "flat" else max(0.0, fit["crown"] - z_top)
         else:
             z_max = float(np.percentile(roof_cloud[:, 2], 99.5)) if len(roof_cloud) else z_top
@@ -882,6 +881,7 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
         base_ring=base_ring,
         spiral_stair=stair,
         handrail_height=handrail,
+        handrail_source="measured" if handrail else "",
         sphere=sphere,
         roof_profile_z=info.get("roof_profile_z") or None,
     )
@@ -1316,8 +1316,7 @@ def _roof_height(roof_pts, center, radius, z_base, z_top, roof: str) -> tuple[fl
     return rise, (z_top - z_base) + rise
 
 
-def _upper_ring_coverage(samples, center, radius: float, z_lo: float, z_hi: float) -> float:
-    """Degrees of the rim covered by points between two heights. Local spikes score low."""
+def _rim_points(samples) -> np.ndarray | None:
     chunks = []
     all_pts = samples.get("all") if isinstance(samples, dict) else None
     outer = samples.get("outer") if isinstance(samples, dict) else None
@@ -1326,14 +1325,78 @@ def _upper_ring_coverage(samples, center, radius: float, z_lo: float, z_hi: floa
     if outer is not None and len(outer):
         chunks.append(np.asarray(outer)[:, :3])
     if not chunks:
+        return None
+    return np.vstack(chunks)
+
+
+def _upper_ring_coverage(samples, center, radius: float, z_lo: float, z_hi: float) -> float:
+    """Degrees of the rim covered by points between two heights. Local spikes score low."""
+    pts = _rim_points(samples)
+    if pts is None:
         return 0.0
-    pts = np.vstack(chunks)
     rho = np.hypot(pts[:, 0] - center[0], pts[:, 1] - center[1])
     sel = (rho > radius * 0.85) & (rho < radius + 0.8) & (pts[:, 2] > z_lo) & (pts[:, 2] < z_hi + 0.05)
     if int(sel.sum()) < 12:
         return 0.0
     az = np.degrees(np.arctan2(pts[sel, 1] - center[1], pts[sel, 0] - center[0])) % 360.0
     return float(len(np.unique((az // 15.0).astype(int))) * 15.0)
+
+
+def _band_is_solid_shell(samples, center, radius: float, z_lo: float, z_hi: float) -> bool:
+    """True when the band is the cylindrical wall, not a pipe rail.
+
+    A rail leaves open slices between its tubes. A wall fills every slice
+    at the shell radius with a similar number of points.
+    """
+    pts = _rim_points(samples)
+    if pts is None or z_hi - z_lo < 0.4:
+        return False
+    rho = np.hypot(pts[:, 0] - center[0], pts[:, 1] - center[1])
+    band = (np.abs(rho - radius) < 0.18) & (pts[:, 2] > z_lo) & (pts[:, 2] < z_hi)
+    if int(band.sum()) < 40:
+        return False
+    if abs(float(np.median(rho[band])) - radius) > 0.12:
+        return False
+    edges = np.arange(z_lo, z_hi + 1e-6, 0.25)
+    if len(edges) < 3:
+        return False
+    covers, counts = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = band & (pts[:, 2] >= lo) & (pts[:, 2] < hi)
+        counts.append(int(sel.sum()))
+        if int(sel.sum()) < 8:
+            covers.append(0.0)
+            continue
+        az = np.degrees(np.arctan2(pts[sel, 1] - center[1], pts[sel, 0] - center[0])) % 360.0
+        covers.append(float(len(np.unique((az // 15.0).astype(int))) * 15.0))
+    if sum(c >= 180.0 for c in covers) < 0.8 * len(covers):
+        return False
+    peak = max(counts)
+    return peak > 0 and float(np.median(counts)) >= 0.35 * peak
+
+
+def _handrail_from_band(samples, center, radius: float, wall_top: float, z_top: float,
+                        plate_z: float | None = None) -> tuple[float | None, float]:
+    """Split a ring rail off the wall.
+
+    Returns (handrail height or None, wall top to keep). When the roof plate
+    sits at the top of the band, the band is upper wall and is not a rail.
+    When the plate sits on the picked eave, a ring above it can be a rail.
+    A local spike is dropped from the wall and is not turned into a rail.
+    """
+    if z_top - wall_top <= 0.3:
+        return None, z_top
+    plate_at_top = plate_z is not None and abs(plate_z - z_top) <= 0.25 and z_top - wall_top >= 0.4
+    if plate_at_top:
+        return None, z_top
+    covered = _upper_ring_coverage(samples, center, radius, wall_top + 0.15, z_top) >= 200.0
+    solid = _band_is_solid_shell(samples, center, radius, wall_top + 0.15, z_top)
+    plate_at_eave = plate_z is not None and abs(plate_z - wall_top) <= 0.30
+    if covered and (not solid or plate_at_eave):
+        return float(z_top - wall_top), float(wall_top)
+    if solid:
+        return None, z_top
+    return None, float(wall_top)
 
 
 def _angular_coverage(xy: np.ndarray, center, bins: int = 36) -> float:

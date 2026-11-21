@@ -143,6 +143,7 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 | `--name-prefix` | 导出名前缀。`Tank_007` → `LA0007`，原编号留在 `name_map.csv` 和 FBX 的 `tank_id` | LA |
 | `--material` | 材质名称。Blender 4.2 写出同名 Phong/Lambert。FBX 里没有 3ds Max 的 Standard 材质类 | Standard |
 | `--tube-sides` | 圆管断面边数。省略时 budget 栏杆 8 边、full 12 边。4 边要显式写出，断面接近方杆，不是默认，也不表示 2000 面已经达到 | 省略 |
+| `--corrections` | 按罐或连桥编号读入人工校正。只有 `source` 为 `manual` 或 `assumed` 且写了数值才生效。每次运行另写 `corrections_open.json`，里面的空值不会建护栏或桥柱 | 不使用 |
 | `--local-offset` | FBX 用局部坐标 | 关闭（顶点写绝对坐标） |
 | `--merge` / `--no-merge` | 是否另存 `tanks_all.fbx` | 保存 |
 | `--no-blender` | 只检测、不导出 FBX | 关闭 |

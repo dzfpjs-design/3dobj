@@ -27,6 +27,7 @@ class Tank:
     base_ring: dict | None = None
     spiral_stair: dict | None = None
     handrail_height: float | None = None
+    handrail_source: str = ""  # measured, manual, assumed; empty means no rail was built
     # Absolute roof-plate height in 10 radial bins. Used to judge a bridge end.
     # Independent of the cone drawn from a handrail-lowered eave.
     roof_profile_z: list | None = None

@@ -28,6 +28,7 @@ def build_cli_args(
     material: str | None = None,
     model_origin: str = "",
     quality: str | None = None,
+    corrections: str = "",
 ) -> list[str]:
     """Arguments passed to ``tankextract.cli.main`` (no program name)."""
     args = ["--input", input_path, "--output", output_path]
@@ -51,6 +52,8 @@ def build_cli_args(
         if len(parts) == 3:
             args.extend(["--model-origin", *parts])
     text = exclude.replace("，", ",").strip()
+    if corrections.strip():
+        args.extend(["--corrections", corrections.strip()])
     if text:
         args.extend(["--exclude", text])
     return args
@@ -82,6 +85,7 @@ def launch() -> None:
     material_var = tk.StringVar(value="Standard")
     origin_var = tk.StringVar()
     quality_var = tk.StringVar(value="budget")
+    corrections_var = tk.StringVar()
     blender = resolve_blender(None)
     status = tk.StringVar(value="Blender: " + (blender or "未找到"))
 
@@ -142,6 +146,8 @@ def launch() -> None:
     ttk.Entry(grid, textvariable=material_var, width=12).grid(row=1, column=3, padx=4)
     ttk.Label(grid, text="约定原点 X,Y,Z（空=metadata）").grid(row=2, column=0, sticky="w")
     ttk.Entry(grid, textvariable=origin_var, width=28).grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
+    ttk.Label(grid, text="人工校正 JSON（空=不改）").grid(row=4, column=0, sticky="w")
+    ttk.Entry(grid, textvariable=corrections_var, width=28).grid(row=4, column=1, columnspan=3, sticky="w", padx=4)
 
     ttk.Label(frame, textvariable=status).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
     log = scrolledtext.ScrolledText(frame, height=16, wrap="word")
@@ -215,6 +221,7 @@ def launch() -> None:
             material=material_var.get(),
             model_origin=origin_var.get(),
             quality=quality_var.get(),
+            corrections=corrections_var.get(),
         )
         log.delete("1.0", "end")
         append("命令: tankextract " + " ".join(argv) + "\n\n")

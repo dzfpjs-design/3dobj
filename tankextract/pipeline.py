@@ -18,7 +18,8 @@ from tankextract.osgb_reader import OsgbError
 from tankextract.connectors import find_connectors
 from tankextract.grounding import ground_only
 from tankextract.structures import collect_faces, detect_structures, tank_boxes
-from tankextract.deliverable import assign_export_names, handrail_gaps, seat_walkway_ends
+from tankextract.corrections import apply_corrections, write_open_corrections
+from tankextract.deliverable import _junctions, assign_export_names, handrail_gaps, seat_walkway_ends
 from tankextract.sidecar import write_connectors, write_ground_report, write_name_map, write_sidecars, write_structures
 from tankextract.treefilter import TreeFilterConfig, colour_stats, judge, sample_colours
 from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv, resource_path
@@ -60,6 +61,7 @@ class RunOptions:
     grounding: bool = True  # snap bottoms to the measured ground / foundation top, model foundations
     exclude: tuple[str, ...] = ()  # tank IDs (e.g. Tank_007) checked by eye and dropped; other IDs are kept
     tree_filter: bool = True  # drop tree crowns (foliage-green texture + irregular geometry), offline
+    corrections: dict | None = None  # explicit manual/assumed sizes; never filled with defaults
 
 
 def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[Tank]:
@@ -125,7 +127,7 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
         connectors = [c for c in connectors if c.tank_a not in drop and c.tank_b not in drop]
         structures = [st for st in structures if getattr(st, "parent", None) not in drop]
         log(f"  按 --exclude 剔除 {len(drop)} 个罐: {', '.join(sorted(drop))}；去掉相连走道 {before - len(connectors)} 处")
-    _assume_missing_rails(connectors, log)
+    rail_reference = _record_unmeasured_rails(connectors, log)
     ground_rows: list = []
     if (options.structures or options.grounding) and tanks:
         structures.extend(_detect_structures_all(tanks, connectors, log, struct_stats, pipes=options.pipes,
@@ -133,9 +135,14 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
                                                  ground_rows=ground_rows if options.grounding else None))
     seat_walkway_ends(tanks, connectors)
     name_rows = assign_export_names(tanks, connectors, structures, options.name_prefix)
+    apply_corrections(tanks, connectors, options.corrections, log)
+    by_name = {tank.name: tank for tank in tanks}
+    for conn in connectors:
+        conn.junctions = _junctions(conn, by_name)
     output.mkdir(parents=True, exist_ok=True)
     mode = "local" if options.local_offset else "absolute"
     write_name_map(name_rows, output)
+    write_open_corrections(output / "corrections_open.json", tanks, connectors, rail_reference)
     write_sidecars(tanks, output, mode, model_origin=options.model_origin)
     write_connectors(connectors, output, mode)
     write_structures(structures, tanks, output, mode)
@@ -371,18 +378,20 @@ def _write_tree_report(rows: list[dict], output: Path) -> None:
             ])
 
 
-def _assume_missing_rails(connectors, log) -> None:
-    """Walkways high above the ground always carry guard rails; when the mesh is too thin to
-    show them, use the median measured rail height of the site (marked as assumed)."""
+def _record_unmeasured_rails(connectors, log) -> float | None:
+    """Remember the site median, but do not build a rail from it.
+
+    A missing walkway rail stays missing until a corrections file gives a
+    height and marks it manual or assumed.
+    """
     measured = [c.handrail_height for c in connectors if c.kind == "walkway" and c.handrail_height]
     if not measured:
-        return
+        return None
     median = float(np.median(measured))
     for conn in connectors:
         if conn.kind == "walkway" and conn.handrail_height is None:
-            conn.handrail_height = median
-            conn.rail_source = "assumed (site median, rail not visible in mesh)"
-            log(f"  {conn.name}: 护栏在网格中不可见，按全场中位数 {median:.2f} m 补全")
+            log(f"  {conn.name}: 走道护栏未测到，不按中位数 {median:.2f} m 补建")
+    return median
 
 
 def _detect_structures_all(tanks, connectors, log, struct_stats, pipes: bool = False, structures: bool = True,
@@ -635,6 +644,7 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
                 ),
                 "spiral_stair": tank.spiral_stair,
                 "handrail_height": tank.handrail_height,
+                "handrail_source": getattr(tank, "handrail_source", "") or ("measured" if tank.handrail_height else ""),
                 "sphere": _local_sphere(tank),
                 "extra_parts": [_local_part(p, tank.origin) for p in (tank.extra_parts or [])],
                 "epsg": tank.srs,

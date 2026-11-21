@@ -129,6 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="关闭树冠过滤。默认开启：纹理以植被绿色为主且罐壁/罐顶几何不规整的圆柱判为树冠并剔除，"
              "理由写入 tree_filter_report.csv（完全离线，不用任何在线服务）",
     )
+    parser.add_argument(
+        "--corrections", default=None,
+        help="人工校正 JSON。只采用 source 为 manual 或 assumed 且写了数值的条目；"
+             "空值、unmeasured 和不写 source 的条目不建护栏、不移动桥端、不加柱",
+    )
     parser.add_argument("--limit-tiles", type=int, default=None, help="每个块最多读取的最细瓦片数（调试用）")
     parser.add_argument("--self-test", action="store_true", help="生成合成场景并跑通全流程，用于没有真实数据时的自检")
     parser.add_argument("--version", action="version", version=f"tankextract {__version__}")
@@ -153,6 +158,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     _print_summary(tanks)
     return 0
+
+
+def _load_corrections(path: str | None):
+    if not path:
+        return None
+    from tankextract.corrections import load_corrections
+
+    return load_corrections(Path(path))
 
 
 def _options_from_args(args) -> RunOptions:
@@ -189,6 +202,7 @@ def _options_from_args(args) -> RunOptions:
         grounding=not args.no_grounding,
         tree_filter=not args.no_tree_filter,
         exclude=tuple(n for item in args.exclude for n in item.split(",") if n.strip()),
+        corrections=_load_corrections(args.corrections),
     )
 
 

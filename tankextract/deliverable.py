@@ -165,11 +165,23 @@ def _junctions(conn, by_name) -> list[dict]:
             continue
         dist = math.hypot(x - tank.center_x, y - tank.center_y)
         platform = ((getattr(tank, "accessories", None) or {}).get("roof") or {}).get("platform")
+        inside = tank.radius - dist
+        if inside > 0.15:
+            landing = "inside_shell"
+        elif inside < -0.20:
+            landing = "short_of_wall"
+        else:
+            landing = "at_wall"
         row = {
             "end": end,
             "tank": tank.name,
-            "inside_shell_m": round(tank.radius - dist, 3),
+            "inside_shell_m": round(inside, 3),
             "platform": "not_measured",
+            "landing": landing,
+            "end_stop": (getattr(conn, "end_stops", None) or {}).get(end, ""),
+            "end_source": (getattr(conn, "end_sources", None) or {}).get(end, "measured"),
+            # A small height difference is a measurement, not a completed joint.
+            "accepted": False,
         }
         if platform is None and _has_roof(tank):
             formula = _roof_z_at(tank, dist)

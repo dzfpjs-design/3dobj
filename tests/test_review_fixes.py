@@ -327,6 +327,7 @@ def test_bridge_end_is_compared_with_the_measured_roof_not_a_cutoff():
     assert abs(ends["a"]["dz_measured_m"] - (62.48 - 62.3)) < 0.02
     assert ends["a"]["dz_formula_m"] > 0.3
     assert ends["a"]["relation"] == "deck_above_measured_roof"
+    assert ends["a"]["accepted"] is False
 
 
 def test_budget_tubes_stay_round_unless_sides_are_set():
@@ -411,3 +412,94 @@ def test_handrail_gaps_come_only_from_a_measured_stair():
     gaps = handrail_gaps(WithStair())
     assert len(gaps) == 1 and abs(gaps[0]["azimuth_deg"] - 40.0) < 1e-6
     assert not np.isnan(gaps[0]["width_m"])
+
+
+def test_a_solid_shell_band_is_wall_not_a_handrail():
+    from tankextract.detect import _band_is_solid_shell, _handrail_from_band
+
+    radius = 3.0
+    rows = []
+    for z in np.arange(10.2, 11.2, 0.2):
+        for step in range(36):
+            ang = 2 * math.pi * step / 36
+            rows.append([radius * math.cos(ang), radius * math.sin(ang), z])
+    samples = {"all": np.asarray(rows)}
+    assert _band_is_solid_shell(samples, np.zeros(2), radius, 10.2, 11.1)
+    height, kept = _handrail_from_band(samples, np.zeros(2), radius, 10.0, 11.1)
+    assert height is None and kept == 11.1
+    rail = [[radius * math.cos(a), radius * math.sin(a), 11.05] for a in np.linspace(0, 2 * math.pi, 36, endpoint=False)]
+    rail_samples = {"all": np.asarray(rail)}
+    assert not _band_is_solid_shell(rail_samples, np.zeros(2), radius, 10.2, 11.1)
+    height, kept = _handrail_from_band(rail_samples, np.zeros(2), radius, 10.0, 11.1)
+    assert height is not None and abs(height - 1.1) < 1e-6
+    assert kept == 10.0
+    # A plate at the top of a solid band is the wall, even if the band goes around.
+    height, kept = _handrail_from_band(samples, np.zeros(2), radius, 10.0, 11.1, plate_z=11.05)
+    assert height is None and kept == 11.1
+    # A plate on the eave leaves the ring above it as a rail.
+    height, kept = _handrail_from_band(samples, np.zeros(2), radius, 10.0, 11.1, plate_z=10.05)
+    assert height is not None and kept == 10.0
+
+
+def test_bridge_stops_at_the_wall_when_the_roof_plate_continues():
+    from types import SimpleNamespace
+
+    from tankextract.connectors import _extend
+
+    # Deck runs along +x toward a tank at x=10. The roof plate fills a wide
+    # band inside the shell at the same height as the deck.
+    radius = 3.0
+    center = 10.0
+    xs = np.linspace(5.5, 9.6, 40)
+    deck = np.column_stack([xs, np.zeros(len(xs)), np.full(len(xs), 20.0), np.ones(len(xs)), np.full(len(xs), 0.2)])
+    roof_x = np.linspace(7.2, 10.0, 30)
+    roof_y = np.linspace(-1.4, 1.4, 12)
+    roof = np.array([[x, y, 20.0, 1.0, 0.3] for x in roof_x for y in roof_y])
+    faces = np.vstack([deck, roof])
+    tank = SimpleNamespace(
+        center_x=center, center_y=0.0, radius=radius, sphere=None,
+        roof_profile_z=[20.0] * 10, z_base=8.0, wall_height=12.0, total_height=12.2, roof_type="cone",
+    )
+    # s is distance from x=0, so the wall is at s=7. Start just outside it.
+    pos, reason = _extend(
+        6.4, 0.5, 12.0, np.ones(len(faces), dtype=bool), faces[:, 0], faces[:, 1], faces[:, 2], faces[:, 4],
+        np.array([0.0, 20.0]), tank, np.zeros(2), np.array([1.0, 0.0]), 0.5,
+    )
+    assert "at_wall" in reason
+    assert abs(pos - (center - radius)) < 0.2
+
+
+def test_corrections_do_not_invent_a_missing_size():
+    from types import SimpleNamespace
+
+    from tankextract.corrections import apply_corrections
+
+    tank = SimpleNamespace(name="Tank_028", export_name="LA0007", handrail_height=None, handrail_source="")
+    conn = SimpleNamespace(
+        name="Connector_004", export_name="CN0004", x0=0, y0=0, z0=1, x1=2, y1=0, z1=1,
+        handrail_height=None, rail_source="", supports=[], end_sources={},
+    )
+    apply_corrections([tank], [conn], {
+        "tanks": {"Tank_028": {"source": "unmeasured", "handrail_height_m": 1.05}},
+        "connectors": {"Connector_004": {"source": "manual", "supports": [{"x": 1}]}},
+    }, log=lambda *_a, **_k: None)
+    assert tank.handrail_height is None
+    assert conn.supports == []
+    apply_corrections([tank], [conn], {
+        "tanks": {"LA0007": {"source": "manual", "handrail_height_m": 1.05}},
+        "connectors": {"CN0004": {"source": "assumed", "ends": {"a": {"z": 62.4}}}},
+    }, log=lambda *_a, **_k: None)
+    assert tank.handrail_height == 1.05 and tank.handrail_source == "manual"
+    assert conn.z0 == 62.4 and conn.end_sources["a"] == "assumed"
+
+
+def test_missing_walkway_rail_is_not_filled_with_the_site_median():
+    from types import SimpleNamespace
+
+    from tankextract.pipeline import _record_unmeasured_rails
+
+    seen = SimpleNamespace(name="Connector_001", kind="walkway", handrail_height=1.1, rail_source="measured")
+    missing = SimpleNamespace(name="Connector_002", kind="walkway", handrail_height=None, rail_source="")
+    median = _record_unmeasured_rails([seen, missing], log=lambda *_a, **_k: None)
+    assert abs(median - 1.1) < 1e-9
+    assert missing.handrail_height is None

@@ -38,6 +38,8 @@ class Connector:
     handrail_height: float | None
     fill: float
     supports: list[dict] = field(default_factory=list)  # x, y, z_bottom, z_top, size
+    end_stops: dict = field(default_factory=dict)  # why each end stopped: roof plate, faces ended, ...
+    end_sources: dict = field(default_factory=dict)  # measured, or manual / assumed from a corrections file
     handrail_height_measured: float | None = None
     block: str = ""
     srs: str = ""
@@ -174,11 +176,11 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
     if len(st) < 0.7 * len(stations):
         info["reason"] = "deck not level/straight"
         return None, info
-    # Extend each end over the tank top while the deck stays above the tank
-    # surface (a sphere's walkway runs on to the top platform).
-    s_lo = _extend(s0, -step, 0.0, corridor_up, s, z, area, coef, a, pa, u, v, step)
-    s_hi = _extend(s1, step, d, corridor_up, s, z, area, coef, b, pa, u, v, step)
-    info.update(extend_a=s0 - s_lo, extend_b=s_hi - s1)
+    # A sphere walkway runs onto its top platform. A cylinder roof plate is not
+    # more deck: stop at the wall instead of following the plate into the tank.
+    s_lo, stop_a = _extend(s0, -step, 0.0, corridor_up, s, t, z, area, coef, a, pa, u, step)
+    s_hi, stop_b = _extend(s1, step, d, corridor_up, s, t, z, area, coef, b, pa, u, step)
+    info.update(extend_a=s0 - s_lo, extend_b=s_hi - s1, end_stop_a=stop_a, end_stop_b=stop_b)
     # Roof-to-roof only: the deck must reach each roof at (or above) its eave.
     # Pipe racks and side platforms run between tanks lower down.
     z_a, z_b = float(np.polyval(coef, s_lo)), float(np.polyval(coef, s_hi))
@@ -285,6 +287,8 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
         x1=float(p1[0]), y1=float(p1[1]), z1=float(np.polyval(coef, s_hi)),
         width=width, depth=depth, handrail_height=rail, fill=float(fill), supports=supports,
         rail_sides=rail_sides, rail_source="measured" if rail is not None else "",
+        end_stops={"a": stop_a, "b": stop_b},
+        end_sources={"a": "measured", "b": "measured"},
     )
     info["reason"] = "ok"
     return conn, info
@@ -307,24 +311,85 @@ def _top_level(z: np.ndarray, area: np.ndarray, bin_size: float = 0.1) -> float:
     return float(np.median(z[sel]))
 
 
-def _extend(start, step, limit, near, s, z, area, coef, tank, pa, u, v, bin_step) -> float:
-    """Walk from a rim along the axis over the tank while deck faces continue."""
-    eave, crown = tank_levels(tank)
+def _measured_roof_z(tank, rho: float) -> float | None:
+    profile = getattr(tank, "roof_profile_z", None) or []
+    radius = float(getattr(tank, "radius", 0.0) or 0.0)
+    if not profile or radius <= 0:
+        return None
+    unit = min(max(float(rho), 0.0) / radius, 0.999)
+    index = min(int(unit * len(profile)), len(profile) - 1)
+    value = profile[index]
+    return None if value is None else float(value)
+
+
+def _shell_s(pa, u, centre, radius: float, near_s: float) -> float | None:
+    """Axis station where the walkway centreline meets the tank wall."""
+    rel = pa - centre
+    quad_b = 2.0 * float(np.dot(rel, u))
+    quad_c = float(np.dot(rel, rel) - radius * radius)
+    disc = quad_b * quad_b - 4.0 * quad_c
+    if disc < 0:
+        return None
+    root = float(np.sqrt(disc))
+    cand = ((-quad_b - root) / 2.0, (-quad_b + root) / 2.0)
+    return float(min(cand, key=lambda value: abs(value - near_s)))
+
+
+def _extend(start, step, limit, near, s, lateral, z, area, coef, tank, pa, u, bin_step):
+    """Walk inward while the deck is still a walkway.
+
+    A sphere may continue onto its platform. On a cylinder, a wide band of
+    upward faces at the roof-plate height is the roof, not more bridge.
+    The end is then put on the wall. The deck elevation is not changed.
+    Returns (station, stop reason).
+    """
     centre = np.array([tank.center_x, tank.center_y])
-    pos = start
-    while (pos + step - limit) * np.sign(step) <= 0 if step > 0 else pos + step >= limit:
+    pos = float(start)
+    reason = "rim"
+    inward = 1.0 if step > 0 else -1.0
+    while (pos + step - limit) * inward <= 0:
         lo, hi = sorted((pos, pos + step))
-        level = float(np.polyval(coef, 0.5 * (lo + hi)))
-        point = pa + u * 0.5 * (lo + hi)
+        mid = 0.5 * (lo + hi)
+        level = float(np.polyval(coef, mid))
+        point = pa + u * mid
         rho = float(np.linalg.norm(point - centre))
-        surface = _surface_z(tank, rho)
-        if surface > level - 0.3:
-            break
         sel = near & (s >= lo) & (s < hi) & (np.abs(z - level) < 0.2)
-        if sel.sum() < 2:
+        if int(sel.sum()) < 2:
+            reason = "deck_faces_ended"
             break
+        if getattr(tank, "sphere", None):
+            if _surface_z(tank, rho) > level - 0.3:
+                reason = "sphere_surface"
+                break
+            pos += step
+            reason = "extended_on_sphere"
+            continue
+        if rho < float(tank.radius) + 0.05:
+            if int(sel.sum()) >= 4:
+                span = float(np.percentile(lateral[sel], 95) - np.percentile(lateral[sel], 5))
+                if span > 2.0:
+                    reason = "roof_band_widened"
+                    break
+            measured = _measured_roof_z(tank, rho)
+            if measured is not None and measured > level - 0.15:
+                reason = "roof_plate_reached"
+                break
+            if measured is None and _surface_z(tank, rho) > level - 0.30:
+                reason = "roof_surface"
+                break
         pos += step
-    return float(pos)
+        reason = "extended"
+    if reason in ("roof_plate_reached", "roof_band_widened", "roof_surface"):
+        wall = _shell_s(pa, u, centre, float(tank.radius), pos)
+        if wall is not None:
+            # Land on the wall. A stop inside the shell means the next faces
+            # were the roof plate, so the accepted station is pulled back too.
+            delta = (wall - pos) * inward
+            already_inside = (pos - wall) * inward > 0.0
+            if already_inside or 0.0 < delta <= abs(step) + 0.05:
+                pos = wall
+                reason = reason + "_at_wall"
+    return float(pos), reason
 
 
 def _surface_z(tank, rho: float) -> float:
