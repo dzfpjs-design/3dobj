@@ -1058,35 +1058,62 @@ def _sphere_check(all_pts, center, radius: float, z_base: float, z_top: float) -
     out = {"sphere": False}
     if radius < 3.0 or len(all_pts) < 200:
         return out
-    rho = np.hypot(all_pts[:, 0] - center[0], all_pts[:, 1] - center[1])
-    z = all_pts[:, 2]
-    sel = rho < radius * 1.02
-    rho, z = rho[sel], z[sel]
-    tol = max(0.15, 0.03 * radius)
-    best = None
-    for zc in np.arange(z_base, z_top + 0.5 * radius, 0.1):
-        upper = z > zc + 0.3 * radius
-        if upper.sum() < 50:
-            continue
-        on = upper & (np.abs(np.hypot(rho, z - zc) - radius) < tol)
-        frac = on.sum() / upper.sum()
-        if best is None or on.sum() > best[0]:
-            best = (int(on.sum()), float(zc), float(frac))
+    rho_all = np.hypot(all_pts[:, 0] - center[0], all_pts[:, 1] - center[1])
+    z_all = all_pts[:, 2]
+    # The cylinder fit can sit inside the true shell (legs and a walkway pull it
+    # in). Try a band of radii and keep a candidate only when the surface
+    # reaches the pole and rises well above the vertical belt. A dome cap does
+    # not.
+    def belt_top(wall_radius: float) -> float:
+        """Top of the vertical shell at the cylinder-fit radius, not at a trial radius."""
+        tol = max(0.15, 0.03 * wall_radius)
+        cyl = np.abs(rho_all - wall_radius) < tol
+        if cyl.sum() < 20:
+            return z_top
+        return float(np.percentile(z_all[cyl], 98))
+
+    cyl_top = belt_top(float(radius))
+
+    def evaluate(trial: float):
+        sel = rho_all < trial * 1.05
+        rho, z = rho_all[sel], z_all[sel]
+        tol = max(0.15, 0.03 * float(trial))
+        local = None
+        for zc in np.arange(z_base, z_top + 0.5 * trial, 0.1):
+            upper = z > zc + 0.3 * trial
+            if upper.sum() < 50:
+                continue
+            on = upper & (np.abs(np.hypot(rho, z - zc) - trial) < tol)
+            frac = on.sum() / upper.sum()
+            if local is None or on.sum() > local[0]:
+                local = (int(on.sum()), float(zc), float(frac))
+        if local is None:
+            return None
+        count, zc, frac = local
+        upper = z > zc + 0.3 * trial
+        top = float(np.percentile(z[upper], 99)) if upper.any() else zc
+        # A trial radius that misses the wall must not invent a low belt.
+        is_sphere = frac >= 0.34 and top >= zc + 0.85 * trial and top - cyl_top >= 0.5 * trial and count >= 100
+        return (1 if is_sphere else 0, frac, float(trial), zc, top, cyl_top, count)
+
+    # Keep the cylinder radius when it already passes. A nearby radius is used
+    # only when that fit sits inside the shell and fails the surface fraction.
+    best = evaluate(float(radius))
+    if best is None or not best[0]:
+        for trial in np.arange(radius * 0.96, radius * 1.12 + 1e-9, 0.04):
+            cand = evaluate(float(trial))
+            if cand is None:
+                continue
+            if best is None or cand[:2] > best[:2]:
+                best = cand
     if best is None:
         return out
-    count, zc, frac = best
-    upper = z > zc + 0.3 * radius
-    top = float(np.percentile(z[upper], 99)) if upper.any() else zc
-    out.update(center_z=zc, upper_fraction=frac, top=top, radius=float(radius))
-    # Most of the upper surface on the sphere, it reaches near the pole, and
-    # it rises well above the last vertical stretch (a dome roof does not).
-    # Where the surface stops being a vertical wall at the fitted radius:
-    # the equator for a sphere, the eave/handrail for a cylinder.
-    cyl = np.abs(rho - radius) < tol
-    cyl_top = float(np.percentile(z[cyl], 98)) if cyl.sum() >= 20 else z_top
-    out["cylinder_top"] = cyl_top
-    is_sphere = frac >= 0.38 and top >= zc + 0.85 * radius and top - cyl_top >= 0.5 * radius and count >= 100
-    out["sphere"] = bool(is_sphere)
+    _passed, frac, radius, zc, top, cyl_top, count = best
+    sel = rho_all < radius * 1.05
+    rho, z = rho_all[sel], z_all[sel]
+    out.update(center_z=zc, upper_fraction=frac, top=top, radius=float(radius), cylinder_top=cyl_top)
+    is_sphere = bool(_passed)
+    out["sphere"] = is_sphere
     if is_sphere:
         # Refine centre height and radius on the upper hemisphere; the wall
         # fit is pulled by support legs and mesh skirts under the equator.
@@ -1314,7 +1341,39 @@ def _wind_girders(outer_pts, center, radius, z_base, z_top) -> list[dict]:
         if zz < z_base + 0.45 or zz > z_top - 0.35:
             continue
         hits.append((zz, float(np.median(rho[sel] - radius))))
-    return _merge_z_hits(hits, gap=0.22)
+    merged = _merge_z_hits(hits, gap=0.22)
+    # A single height bin is a slice, not a cross-section. Fit the circle on
+    # the whole cluster around the merged height.
+    for record in merged:
+        sel = np.abs(z - record["z"]) < 0.40
+        section = _round_section(rho[sel] - radius, z[sel])
+        if section:
+            record["diameter"] = section["diameter"]
+            record["center_rho"] = section["center_rho"]
+            record["section_fit_m"] = section["fit_m"]
+    return merged
+
+
+def _round_section(rho_off, z) -> dict | None:
+    """Circle in the (distance from shell, height) plane. None when the cloud is not round."""
+    if len(rho_off) < 30:
+        return None
+    x = np.asarray(rho_off, dtype=float)
+    y = np.asarray(z, dtype=float)
+    if len(x) > 2500:
+        idx = np.linspace(0, len(x) - 1, 2500).astype(int)
+        x, y = x[idx], y[idx]
+    coeff, *_rest = np.linalg.lstsq(np.c_[x, y, np.ones(len(x))], -(x * x + y * y), rcond=None)
+    cx, cy = -coeff[0] / 2.0, -coeff[1] / 2.0
+    rad2 = cx * cx + cy * cy - coeff[2]
+    if rad2 <= 0.05 ** 2:
+        return None
+    rad = float(np.sqrt(rad2))
+    residual = float(np.median(np.abs(np.hypot(x - cx, y - cy) - rad)))
+    span = min(float(np.percentile(x, 90) - np.percentile(x, 10)), float(np.percentile(y, 90) - np.percentile(y, 10)))
+    if residual > 0.30 * rad or span < rad or not (0.08 <= 2.0 * rad <= 0.8):
+        return None
+    return {"diameter": 2.0 * rad, "center_rho": float(cx), "fit_m": residual}
 
 
 def _base_ring(outer_pts, center, radius, z_base) -> dict | None:
@@ -1347,13 +1406,17 @@ def _merge_z_hits(hits: list[tuple[float, float]], gap: float) -> list[dict]:
             groups.append([item])
     result = []
     for group in groups:
-        result.append(
-            {
-                "z": float(np.mean([item[0] for item in group])),
-                "protrusion": float(np.mean([item[1] for item in group])),
-                "height": 0.15,
-            }
-        )
+        sections = [item[2] for item in group if len(item) > 2 and item[2]]
+        record = {
+            "z": float(np.mean([item[0] for item in group])),
+            "protrusion": float(np.mean([item[1] for item in group])),
+            "height": 0.15,
+        }
+        if sections:
+            record["diameter"] = float(np.mean([item["diameter"] for item in sections]))
+            record["center_rho"] = float(np.mean([item["center_rho"] for item in sections]))
+            record["section_fit_m"] = float(np.mean([item["fit_m"] for item in sections]))
+        result.append(record)
     return result
 
 

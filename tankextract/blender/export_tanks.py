@@ -782,14 +782,21 @@ def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps, plan=None) ->
 
 
 def _append_girders(pieces, cx, cy, radius, girders, plan=None) -> None:
-    """Measured shell rings as pipes. The protrusion is the measured stick-out, not a plate."""
+    """Shell rings as pipes only when the cross-section fitted a circle.
+
+    Radial stick-out is not a diameter: a plate and a pipe can share it.
+    """
     circ = 12 if plan and plan.get("quality") == "budget" else 16
     for index, girder in enumerate(girders or [], start=1):
-        prot = max(float(girder.get("protrusion") or 0.08), 0.04)
-        pipe_r = prot / 2.0
+        diameter = girder.get("diameter")
+        if not diameter:
+            continue
+        pipe_r = max(float(diameter) / 2.0, 0.04)
+        center_rho = girder.get("center_rho")
+        ring_r = radius + (float(center_rho) if center_rho is not None else pipe_r)
         pieces.append((
             f"wind_girder_{index:02d}",
-            *_ring_pipe(cx, cy, float(girder["z"]), radius + pipe_r, pipe_r, [], circ=circ),
+            *_ring_pipe(cx, cy, float(girder["z"]), ring_r, pipe_r, [], circ=circ),
         ))
 
 
@@ -803,7 +810,17 @@ def _ring_pipe(cx, cy, z, ring_r, pipe_r, openings, circ=16, radial=6):
         ang = 2 * math.pi * index / circ
         return (cx + ring_r * math.cos(ang), cy + ring_r * math.sin(ang), z)
 
+    # A 12-station ring is coarser than a stair width. Still drop the nearest
+    # station so a measured opening is visible, and drop any station the
+    # opening actually covers.
+    forced = set()
+    for center, half in openings:
+        nearest = min(range(circ), key=lambda index: _angle_delta((360.0 * index / circ) % 360.0, center))
+        forced.add(nearest)
+
     def blocked(index):
+        if index in forced:
+            return True
         deg = (360.0 * index / circ) % 360.0
         return any(_angle_delta(deg, center) <= half for center, half in openings)
 

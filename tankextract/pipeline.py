@@ -528,14 +528,15 @@ def _select_tiles(names: list[str], lod: str) -> list[str]:
     for name in names:
         groups.setdefault(posixpath.dirname(name), []).append(name)
     chosen: list[str] = []
-    want = None if lod == "finest" else int(lod)
+    # "finest" cannot keep only the deepest filename level in a folder.
+    # A PagedLOD branch may end one level early, and that coarser file is a
+    # real leaf. The read loop drops a file only when its own children exist.
+    if lod == "finest":
+        return list(names)
+    want = int(lod)
     for files in groups.values():
         levels = [(_level(name), name) for name in files]
-        if want is None:
-            deepest = max(level for level, _ in levels)
-            chosen.extend(name for level, name in levels if level == deepest)
-        else:
-            chosen.extend(name for level, name in levels if level == want)
+        chosen.extend(name for level, name in levels if level == want)
     return chosen
 
 
@@ -610,6 +611,8 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
                         "z": item["z"] - tank.origin[2],
                         "protrusion": item["protrusion"],
                         "height": item.get("height", 0.15),
+                        "diameter": item.get("diameter"),
+                        "center_rho": item.get("center_rho"),
                     }
                     for item in tank.wind_girders
                 ],
@@ -644,6 +647,7 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
             "width": conn.width,
             "depth": conn.depth,
             "handrail_height": conn.handrail_height,
+            "junctions": list(getattr(conn, "junctions", None) or []),
             "supports": [
                 {**sp, "x": sp["x"] - ox, "y": sp["y"] - oy, "z_bottom": sp["z_bottom"] - oz, "z_top": sp["z_top"] - oz}
                 for sp in conn.supports

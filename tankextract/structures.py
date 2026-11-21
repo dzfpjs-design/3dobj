@@ -905,16 +905,30 @@ def roof_platform(F: np.ndarray, tank, connectors_az=()) -> dict | None:
         m = (d < 0.45 * R) & (F[:, 2] > crown - 0.4) & (F[:, 2] < crown + 1.0) & (F[:, 5] > 0.85)
         if m.sum() < 30:
             return None
-        hh, e = np.histogram(F[m, 2], bins=np.arange(crown - 0.4, crown + 1.0, 0.05), weights=F[m, 6])
-        zp = float(e[int(np.argmax(hh))] + 0.025)
-        on = m & (np.abs(F[:, 2] - zp) < 0.08)
-        # radius: largest rho where the deck still covers most azimuths (ignores walkway arms)
-        rp = 0.6
-        for r_ in np.arange(0.6, 0.45 * R, 0.1):
-            ring = on & (np.abs(d - r_) < 0.1)
-            cov = len(np.unique((az[ring] // 15).astype(int))) / 24.0
-            if cov >= 0.6:
-                rp = float(r_)
+        hh, edges = np.histogram(F[m, 2], bins=np.arange(crown - 0.4, crown + 1.2, 0.05), weights=F[m, 6])
+        # The densest height is often the crown cap. A wider deck a little
+        # higher is the platform, so keep the height whose covered radius is largest.
+        best = None
+        for idx in np.argsort(hh)[::-1][:8]:
+            if hh[idx] <= 0:
+                continue
+            trial = float(edges[idx] + 0.025)
+            trial_on = m & (np.abs(F[:, 2] - trial) < 0.08)
+            rp_try = None
+            for r_ in np.arange(0.6, 0.45 * R, 0.1):
+                ring = trial_on & (np.abs(d - r_) < 0.1)
+                if ring.sum() < 8:
+                    continue
+                cov = len(np.unique((az[ring] // 15).astype(int))) / 24.0
+                if cov >= 0.6:
+                    rp_try = float(r_)
+            if rp_try is None:
+                continue
+            if best is None or rp_try > best[0]:
+                best = (rp_try, trial, trial_on)
+        if best is None:
+            return None
+        rp, zp, on = best
         surf = None
     else:
         surf = roof_surface(F, tank)
@@ -997,15 +1011,17 @@ def platform_parts(prefix: str, tank, info: dict, segs: int = 24) -> list:
         zp, rp = pf["z"], pf["radius"]
         poly = [(cx + rp * math.cos(2 * math.pi * k / segs), cy + rp * math.sin(2 * math.pi * k / segs)) for k in range(segs)]
         parts.append(prism(f"{prefix}_platform", poly, zp - 0.1, zp))
-        rh = pf.get("rail_height") or 1.05
-        gap = max(8.0, math.degrees(0.6 / max(rp, 0.3)))
-        skip = []
-        for k in range(segs):
-            a_mid = math.degrees(2 * math.pi * (k + 0.5) / segs) % 360
-            skip.append(any(abs(((a_mid - o + 180) % 360) - 180) < gap for o in opens))
-        for run in _circular_runs(poly, skip):
-            parts += railing_polyline(f"{prefix}_platform_rail", run, zp, rh, post_step=1.2,
-                                      closed=len(run) == segs and not any(skip))
+        rh = pf.get("rail_height")
+        # No measured rail: keep the deck and do not invent a height.
+        if rh:
+            gap = max(8.0, math.degrees(0.6 / max(rp, 0.3)))
+            skip = []
+            for k in range(segs):
+                a_mid = math.degrees(2 * math.pi * (k + 0.5) / segs) % 360
+                skip.append(any(abs(((a_mid - o + 180) % 360) - 180) < gap for o in opens))
+            for run in _circular_runs(poly, skip):
+                parts += railing_polyline(f"{prefix}_platform_rail", run, zp, rh, post_step=1.2,
+                                          closed=len(run) == segs and not any(skip))
     surf = info.get("surface")
     for j, w in enumerate(info.get("walkways", []), start=1):
         a = math.radians(w["azimuth_deg"])

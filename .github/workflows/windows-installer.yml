@@ -55,13 +55,15 @@ jobs:
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tankextract-v1.3.1
-          name: TankExtract 1.3.1 Windows
+          tag_name: tankextract-v1.3.2
+          name: TankExtract 1.3.2 Windows
           prerelease: true
           generate_release_notes: false
           body: |
-            Windows 10/11 x64 安装包 1.3.1。不覆盖 1.0.0–1.3.0。
-            走道栏杆仅在已测到罐顶平台栏杆、且高度差超过 15 cm 时改用该实测值。
+            Windows 10/11 x64 安装包 1.3.2，仍是候选，不是验收版。不覆盖 1.0.0–1.3.1。
+            球罐判定在圆柱半径偏低时搜索邻近半径，并用原圆柱的竖向带顶作对照，避免把拱顶/锥顶判成球。
+            加强圈只在断面拟合为圆时按测得直径做圆管，不用外伸量代替管径。
+            走道端点写入是否接到已测罐顶平台；只进入罐壁半径内不算通过。
           files: dist/installer/TankExtract-Setup-*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

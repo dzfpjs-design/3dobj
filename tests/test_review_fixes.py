@@ -220,6 +220,119 @@ def test_budget_lowers_shell_faces_and_keeps_the_rail(tmp_path):
         image.save(art / "face-budget-compare.png")
 
 
+def test_sphere_search_accepts_a_low_cylinder_fit_and_rejects_a_dome_cap():
+    from tankextract.detect import _round_section, _sphere_check
+
+    rng = np.random.default_rng(0)
+    count = 5000
+    theta = 2 * np.pi * rng.random(count)
+    phi = np.arccos(2 * rng.random(count) - 1)
+    radius = 8.0
+    sphere = np.column_stack([
+        radius * np.sin(phi) * np.cos(theta),
+        radius * np.sin(phi) * np.sin(theta),
+        20.0 + radius * np.cos(phi),
+    ])
+    found = _sphere_check(sphere, np.zeros(2), 7.4, 10.0, 28.0)
+    assert found["sphere"]
+    assert abs(found["radius"] - 8.0) < 0.35
+    wall = []
+    for z in np.linspace(0.0, 12.0, 40):
+        ang = np.linspace(0, 2 * np.pi, 80, endpoint=False)
+        wall.append(np.column_stack([8 * np.cos(ang), 8 * np.sin(ang), np.full(80, z)]))
+    cap_z = 12.0 + 1.6 * np.sqrt(np.clip(1 - (np.linspace(0, 0.95, 12) ** 2), 0, 1))
+    cap = []
+    for zz, frac in zip(cap_z, np.linspace(0, 0.95, 12)):
+        ang = np.linspace(0, 2 * np.pi, 80, endpoint=False)
+        cap.append(np.column_stack([8 * frac * np.cos(ang), 8 * frac * np.sin(ang), np.full(80, zz)]))
+    dome = _sphere_check(np.vstack(wall + cap), np.zeros(2), 8.0, 0.0, 12.0)
+    assert not dome["sphere"]
+    ang = rng.random(800) * 2 * np.pi
+    section = _round_section(0.32 + 0.12 * np.cos(ang), 10.0 + 0.12 * np.sin(ang))
+    assert abs(section["diameter"] - 0.24) < 0.03
+    assert abs(section["diameter"] - 0.44) > 0.1
+    plate = _round_section(rng.uniform(0.05, 0.50, 800), rng.uniform(9.92, 10.08, 800))
+    assert plate is None
+
+
+def test_a_narrow_measured_opening_removes_one_station_on_a_coarse_ring():
+    mesh = _module()
+    half = math.degrees(0.8 / (2.0 * 8.5))
+    verts, _faces = mesh._ring_pipe(0, 0, 1.0, 8.5, 0.03, [(10.0, half)], circ=12)
+    angles = [math.degrees(math.atan2(v[1], v[0])) % 360.0 for v in verts]
+    assert verts
+    assert all(abs(((angle - 10.0 + 180.0) % 360.0) - 180.0) > 8.0 for angle in angles)
+
+
+def test_girder_pipe_uses_the_fitted_diameter_only():
+    mesh = _module()
+    pieces = []
+    mesh._append_girders(
+        pieces, 0, 0, 8.0,
+        [{"z": 6.0, "protrusion": 0.50, "diameter": 0.24, "center_rho": 0.32}],
+        {"quality": "budget"},
+    )
+    radii = [math.hypot(v[0], v[1]) for v in pieces[0][1]]
+    assert min(radii) > 8.0 + 0.32 - 0.14
+    assert max(radii) < 8.0 + 0.32 + 0.14
+    skipped = []
+    mesh._append_girders(skipped, 0, 0, 8.0, [{"z": 6.0, "protrusion": 0.50}], {"quality": "budget"})
+    assert skipped == []
+
+
+def test_inside_the_shell_is_not_a_platform_connection():
+    tank = _Tank("Tank_001", 0, 0, 8.0)
+    conn = _Conn()
+    conn.x0, conn.y0, conn.z0 = 7.5, 0.0, 12.0
+    seat_walkway_ends([tank, _Tank("Tank_002", 20, 0, 5)], [conn])
+    ends = {row["end"]: row for row in conn.junctions}
+    assert ends["a"]["platform"] == "not_measured"
+    assert ends["a"]["inside_shell_m"] > 0
+    seated = _Conn()
+    seat_walkway_ends([
+        _Tank("Tank_001", 0, 0, 5, platform={"radius": 4.0, "z": 11.5, "rail_height": 1.05}),
+        _Tank("Tank_002", 20, 0, 5),
+    ], [seated])
+    ends = {row["end"]: row for row in seated.junctions}
+    assert ends["a"]["platform"] == "meets_platform"
+    assert ends["b"]["platform"] == "not_measured"
+
+
+def test_finest_lod_keeps_a_coarser_leaf_beside_a_deeper_one():
+    from tankextract.pipeline import _select_tiles
+
+    names = ["Tile/Tile_L21_0uuuu734.osgb", "Tile/Tile_L22_0uuuu6302.osgb"]
+    assert set(_select_tiles(names, "finest")) == set(names)
+    assert _select_tiles(names, "22") == ["Tile/Tile_L22_0uuuu6302.osgb"]
+
+
+def test_sphere_platform_uses_the_wider_deck_and_skips_an_unmeasured_rail():
+    from types import SimpleNamespace
+
+    from tankextract.structures import platform_parts, roof_platform
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for _ in range(500):
+        ang = rng.random() * 2 * np.pi
+        radius = 0.65 * np.sqrt(rng.random())
+        rows.append([radius * np.cos(ang), radius * np.sin(ang), 10.0, 0, 0, 1, 0.04])
+    for radius in np.arange(0.8, 2.35, 0.15):
+        for step in range(36):
+            ang = 2 * np.pi * step / 36
+            rows.append([radius * np.cos(ang), radius * np.sin(ang), 10.18, 0, 0, 1, 0.04])
+    tank = SimpleNamespace(
+        center_x=0.0, center_y=0.0, radius=8.0, z_base=0.0, total_height=10.0,
+        sphere={"center_z": 2.0, "radius": 8.0},
+    )
+    info = roof_platform(np.asarray(rows, float), tank)
+    assert info["platform"]["radius"] > 1.8
+    assert info["platform"]["rail_height"] is None
+    parts = platform_parts("T", tank, info)
+    assert any(part["name"].endswith("_platform") for part in parts)
+    assert not any("platform_rail" in part["name"] for part in parts)
+
+
 def test_handrail_gaps_come_only_from_a_measured_stair():
     class Bare:
         accessories = {}

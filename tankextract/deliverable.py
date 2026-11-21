@@ -141,7 +141,41 @@ def seat_walkway_ends(tanks, connectors) -> None:
             platform = ((getattr(tank, "accessories", None) or {}).get("roof") or {}).get("platform")
             if platform:
                 _move_end(conn, tank, end, platform)
+        conn.junctions = _junctions(conn, by_name)
         _align_bridge_rail_to_measured_platform(conn, by_name)
+
+
+def _junctions(conn, by_name) -> list[dict]:
+    """Whether each end meets a measured roof platform.
+
+    A deck that merely stops inside the shell radius is recorded as
+    ``not_measured``. It is not treated as a platform connection.
+    """
+    rows = []
+    for end, tank_name, x, y, z in (
+        ("a", conn.tank_a, conn.x0, conn.y0, conn.z0),
+        ("b", conn.tank_b, conn.x1, conn.y1, conn.z1),
+    ):
+        tank = by_name.get(tank_name)
+        if tank is None:
+            continue
+        dist = math.hypot(x - tank.center_x, y - tank.center_y)
+        platform = ((getattr(tank, "accessories", None) or {}).get("roof") or {}).get("platform")
+        row = {
+            "end": end,
+            "tank": tank.name,
+            "inside_shell_m": round(tank.radius - dist, 3),
+            "platform": "not_measured",
+        }
+        if platform:
+            radius = float(platform["radius"])
+            level = platform.get("z")
+            on_disk = dist <= radius + 0.15
+            at_level = level is None or abs(z - float(level)) <= 0.40
+            row["platform"] = "meets_platform" if on_disk and at_level else "misses_platform"
+            row["platform_radius_m"] = round(radius, 3)
+        rows.append(row)
+    return rows
 
 
 def _move_end(conn, tank, end: str, platform: dict) -> None:
