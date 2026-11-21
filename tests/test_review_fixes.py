@@ -296,6 +296,45 @@ def test_girder_pipe_uses_the_fitted_diameter_only():
     assert skipped == []
 
 
+def test_a_local_spike_is_not_a_ring_rail():
+    from tankextract.detect import _upper_ring_coverage
+
+    radius = 3.0
+    ring = []
+    for step in range(24):
+        ang = 2 * math.pi * step / 24
+        ring.append([radius * math.cos(ang), radius * math.sin(ang), 12.2])
+    covered = _upper_ring_coverage({"all": np.asarray(ring)}, np.zeros(2), radius, 11.5, 12.5)
+    assert covered >= 200
+    local = np.asarray([[radius, 0.0, 12.4], [radius + 0.1, 0.2, 12.5], [radius - 0.1, -0.1, 12.3]])
+    assert _upper_ring_coverage({"all": local}, np.zeros(2), radius, 11.5, 12.5) < 200
+
+
+def test_bridge_on_the_cone_meets_the_roof_without_a_platform():
+    tank = _Tank("Tank_001", 0, 0, 3.0)
+    tank.z_base = 50.0
+    tank.wall_height = 10.0
+    tank.total_height = 11.0
+    tank.roof_type = "cone"
+    conn = _Conn()
+    conn.x0, conn.y0, conn.z0 = 2.8, 0.0, 60.067
+    seat_walkway_ends([tank, _Tank("Tank_002", 20, 0, 5)], [conn])
+    ends = {row["end"]: row for row in conn.junctions}
+    assert ends["a"]["platform"] == "meets_roof"
+    assert abs(ends["a"]["dz_m"]) < 0.05
+    assert ends["b"]["platform"] == "not_measured"
+
+
+def test_budget_keeps_a_rod_and_uses_fewer_sides():
+    mesh = _module()
+    part = {"name": "T_brace", "type": "rod", "p0": [0, 0, 0], "p1": [0, 0, 2], "radius": 0.04}
+    full = mesh._part_pieces([part], "T", {"quality": "full"})
+    budget = mesh._part_pieces([part], "T", {"quality": "budget"})
+    assert full and budget
+    assert len(budget[0][2]) < len(full[0][2])
+    assert len(budget[0][2]) >= 6
+
+
 def test_inside_the_shell_is_not_a_platform_connection():
     tank = _Tank("Tank_001", 0, 0, 8.0)
     conn = _Conn()

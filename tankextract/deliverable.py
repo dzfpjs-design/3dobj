@@ -171,6 +171,20 @@ def _junctions(conn, by_name) -> list[dict]:
             "inside_shell_m": round(tank.radius - dist, 3),
             "platform": "not_measured",
         }
+        if platform is None and _has_roof(tank):
+            z_roof = _roof_z_at(tank, dist)
+            dz = z - z_roof
+            row["roof_z_m"] = round(z_roof, 3)
+            row["deck_z_m"] = round(z, 3)
+            row["dz_m"] = round(dz, 3)
+            row["radial_outside_m"] = round(max(0.0, dist - tank.radius), 3)
+            row["junction_gap_m"] = round(abs(dz), 3)
+            # On the cone or dome itself. Not a separate platform, and not invented.
+            if abs(dz) <= 0.30:
+                row["platform"] = "meets_roof"
+                row["confidence"] = "measured"
+            else:
+                row["confidence"] = "roof_mismatch"
         if platform:
             radius = float(platform["radius"])
             level = platform.get("z")
@@ -193,6 +207,22 @@ def _junctions(conn, by_name) -> list[dict]:
             row["confidence"] = "measured" if meets else "measured_miss"
         rows.append(row)
     return rows
+
+
+def _has_roof(tank) -> bool:
+    return all(hasattr(tank, name) for name in ("z_base", "wall_height", "total_height", "roof_type", "radius"))
+
+
+def _roof_z_at(tank, dist: float) -> float:
+    """Roof surface height at a horizontal distance from the tank centre."""
+    eave = float(tank.z_base) + float(tank.wall_height)
+    crown = float(tank.z_base) + float(tank.total_height)
+    frac = min(max(dist, 0.0) / max(float(tank.radius), 1e-6), 1.0)
+    if tank.roof_type == "cone":
+        return crown - (crown - eave) * frac
+    if tank.roof_type == "dome":
+        return eave + (crown - eave) * math.sqrt(max(0.0, 1.0 - frac * frac))
+    return eave
 
 
 def _move_end(conn, tank, end: str, platform: dict) -> None:

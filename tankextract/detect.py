@@ -820,7 +820,10 @@ def _measure(candidate, samples, config: DetectConfig, ground_at, block, srs, or
             roof = fit["roof"]
             wall_top = fit["wall_top"]
             if z_top - wall_top > 0.3:
-                handrail = float(z_top - wall_top)
+                # A ring rail goes around the tank. A local vent or bridge end
+                # does not, and is not turned into a handrail.
+                if _upper_ring_coverage(samples, center, radius, wall_top + 0.15, z_top) >= 200.0:
+                    handrail = float(z_top - wall_top)
                 z_top = wall_top
                 wall_h = z_top - z_base
             rise = 0.0 if roof == "flat" else max(0.0, fit["crown"] - z_top)
@@ -1280,6 +1283,26 @@ def _roof_height(roof_pts, center, radius, z_base, z_top, roof: str) -> tuple[fl
     if roof == "flat":
         return 0.0, z_top - z_base
     return rise, (z_top - z_base) + rise
+
+
+def _upper_ring_coverage(samples, center, radius: float, z_lo: float, z_hi: float) -> float:
+    """Degrees of the rim covered by points between two heights. Local spikes score low."""
+    chunks = []
+    all_pts = samples.get("all") if isinstance(samples, dict) else None
+    outer = samples.get("outer") if isinstance(samples, dict) else None
+    if all_pts is not None and len(all_pts):
+        chunks.append(np.asarray(all_pts)[:, :3])
+    if outer is not None and len(outer):
+        chunks.append(np.asarray(outer)[:, :3])
+    if not chunks:
+        return 0.0
+    pts = np.vstack(chunks)
+    rho = np.hypot(pts[:, 0] - center[0], pts[:, 1] - center[1])
+    sel = (rho > radius * 0.85) & (rho < radius + 0.8) & (pts[:, 2] > z_lo) & (pts[:, 2] < z_hi + 0.05)
+    if int(sel.sum()) < 12:
+        return 0.0
+    az = np.degrees(np.arctan2(pts[sel, 1] - center[1], pts[sel, 0] - center[0])) % 360.0
+    return float(len(np.unique((az // 15.0).astype(int))) * 15.0)
 
 
 def _angular_coverage(xy: np.ndarray, center, bins: int = 36) -> float:

@@ -333,8 +333,8 @@ def _note_model(group, merged, limits, report) -> None:
     if exceeded:
         reason = (
             f"model has {polygons} polygons / {triangles} triangles, over {int(limit)}. "
-            "Shell segments are already at the precision chord or the 16-side floor. "
-            "Rails, stairs and legs were kept."
+            "Shell segments are at the chord or the 16-side floor, and budget tubes are 4-sided. "
+            "Treads, rails, legs and openings were kept, so this is the remaining count."
         )
     report.setdefault("models", []).append({
         "name": group,
@@ -416,7 +416,11 @@ def _part_pieces(parts, group: str, limits=None) -> list:
             rest = f"{rest}_door"
         rest = _latin(rest)
         if kind == "rod":
-            segs = 12 if part["radius"] > 0.1 else 8
+            # Budget keeps every bar, with a 4-side section instead of 8 or 12.
+            if (limits or {}).get("quality") == "budget":
+                segs = 4
+            else:
+                segs = 12 if part["radius"] > 0.1 else 8
             out.append((rest, *_rod(part["p0"], part["p1"], part["radius"], segs)))
         elif kind == "beam":
             out.append((rest, *_beam(part["p0"], part["p1"], part["width"], part["depth"])))
@@ -434,7 +438,10 @@ def _part_pieces(parts, group: str, limits=None) -> list:
                 segs = max(12, min(segs, cap))
             out.append((rest, *_cylinder(cx, cy, part["z0"], part["z1"], part["radius"], segs, caps=True)))
         elif kind == "tube":
-            out.append((rest, *_tube_mesh(part["points"], part["radius"], int(part.get("segments", 6)), bool(part.get("closed")))))
+            segs = int(part.get("segments", 6))
+            if (limits or {}).get("quality") == "budget":
+                segs = min(segs, 4)
+            out.append((rest, *_tube_mesh(part["points"], part["radius"], segs, bool(part.get("closed")))))
     return out
 
 
@@ -456,7 +463,7 @@ def _build_structure(st: dict, mode: str, material, limits=None, report=None) ->
     """Free-standing structure (Stair_###, PipeRack_###, Pipe_###): one Empty, one object per part."""
     source_id = st["id"]
     sid = _group_name(st)
-    pieces = _part_pieces(st.get("parts") or [], source_id)
+    pieces = _part_pieces(st.get("parts") or [], source_id, limits)
     meta = {
         "id": source_id, "export_name": sid, "origin": st["origin"], "epsg": st.get("epsg", ""), "radius": 0.0,
         "wall_height": 0.0, "total_height": 0.0, "roof_type": st.get("kind", ""), "rms_m": 0.0,
@@ -766,11 +773,14 @@ def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps, plan=None) ->
         width = max(float(gap.get("width_m") or 0.8), 0.6)
         half = math.degrees(width / (2.0 * max(ring_r, 0.2)))
         openings.append((float(gap["azimuth_deg"]) % 360.0, half))
-    circ = 12 if plan and plan.get("quality") == "budget" else 16
-    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height, ring_r, pipe_r, openings, circ=circ)))
-    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height * 0.5, ring_r, pipe_r * 0.8, openings, circ=circ)))
-    circ = 2.0 * math.pi * ring_r
-    count = max(4, int(circ / 1.5))
+    budget = bool(plan and plan.get("quality") == "budget")
+    circ = 12 if budget else 16
+    radial = 4 if budget else 6
+    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height, ring_r, pipe_r, openings, circ=circ, radial=radial)))
+    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height * 0.5, ring_r, pipe_r * 0.8, openings, circ=circ, radial=radial)))
+    circ_len = 2.0 * math.pi * ring_r
+    count = max(4, int(circ_len / 1.5))
+    post_sides = 4 if budget else 6
     for index in range(count):
         deg = 360.0 * index / count
         if any(_angle_delta(deg, center) <= half for center, half in openings):
@@ -778,7 +788,7 @@ def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps, plan=None) ->
         ang = math.radians(deg)
         x = cx + ring_r * math.cos(ang)
         y = cy + ring_r * math.sin(ang)
-        pieces.append(("handrail", *_rod((x, y, z_deck), (x, y, z_deck + height), pipe_r, 6)))
+        pieces.append(("handrail", *_rod((x, y, z_deck), (x, y, z_deck + height), pipe_r, post_sides)))
 
 
 def _append_girders(pieces, cx, cy, radius, girders, plan=None) -> None:
@@ -786,7 +796,9 @@ def _append_girders(pieces, cx, cy, radius, girders, plan=None) -> None:
 
     Radial stick-out is not a diameter: a plate and a pipe can share it.
     """
-    circ = 12 if plan and plan.get("quality") == "budget" else 16
+    budget = bool(plan and plan.get("quality") == "budget")
+    circ = 12 if budget else 16
+    radial = 4 if budget else 6
     for index, girder in enumerate(girders or [], start=1):
         diameter = girder.get("diameter")
         if not diameter:
@@ -796,7 +808,7 @@ def _append_girders(pieces, cx, cy, radius, girders, plan=None) -> None:
         ring_r = radius + (float(center_rho) if center_rho is not None else pipe_r)
         pieces.append((
             f"wind_girder_{index:02d}",
-            *_ring_pipe(cx, cy, float(girder["z"]), ring_r, pipe_r, [], circ=circ),
+            *_ring_pipe(cx, cy, float(girder["z"]), ring_r, pipe_r, [], circ=circ, radial=radial),
         ))
 
 
