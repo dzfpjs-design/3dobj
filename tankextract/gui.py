@@ -27,6 +27,7 @@ def build_cli_args(
     name_prefix: str | None = None,
     material: str | None = None,
     model_origin: str = "",
+    quality: str | None = None,
 ) -> list[str]:
     """Arguments passed to ``tankextract.cli.main`` (no program name)."""
     args = ["--input", input_path, "--output", output_path]
@@ -42,6 +43,8 @@ def build_cli_args(
         args.extend(["--name-prefix", name_prefix.strip()])
     if material:
         args.extend(["--material", material.strip()])
+    if quality:
+        args.extend(["--quality", quality])
     origin = model_origin.replace("，", ",").strip()
     if origin:
         parts = [p.strip() for p in origin.split(",")]
@@ -78,6 +81,7 @@ def launch() -> None:
     prefix_var = tk.StringVar(value="LA")
     material_var = tk.StringVar(value="Standard")
     origin_var = tk.StringVar()
+    quality_var = tk.StringVar(value="budget")
     blender = resolve_blender(None)
     status = tk.StringVar(value="Blender: " + (blender or "未找到"))
 
@@ -126,10 +130,12 @@ def launch() -> None:
     ttk.Entry(row, textvariable=exclude_var, width=40).pack(side="left", padx=6)
     grid = ttk.Frame(opts)
     grid.pack(anchor="w", pady=4)
-    ttk.Label(grid, text="面数/单体（超出只警告，不删细节）").grid(row=0, column=0, sticky="w")
+    ttk.Label(grid, text="面数预算（budget 时减曲面，不删件）").grid(row=0, column=0, sticky="w")
     ttk.Entry(grid, textvariable=faces_var, width=8).grid(row=0, column=1, padx=4)
-    ttk.Label(grid, text="精度 m（记录，不减面）").grid(row=0, column=2, sticky="w", padx=(12, 0))
-    ttk.Entry(grid, textvariable=precision_var, width=8).grid(row=0, column=3, padx=4)
+    ttk.Label(grid, text="质量").grid(row=0, column=2, sticky="w", padx=(12, 0))
+    ttk.Combobox(grid, textvariable=quality_var, values=("budget", "full"), width=8, state="readonly").grid(row=0, column=3, padx=4)
+    ttk.Label(grid, text="精度 m（只记录，不参与减面）").grid(row=3, column=0, sticky="w")
+    ttk.Entry(grid, textvariable=precision_var, width=8).grid(row=3, column=1, padx=4)
     ttk.Label(grid, text="命名前缀").grid(row=1, column=0, sticky="w")
     ttk.Entry(grid, textvariable=prefix_var, width=8).grid(row=1, column=1, padx=4)
     ttk.Label(grid, text="材质名").grid(row=1, column=2, sticky="w", padx=(12, 0))
@@ -208,6 +214,7 @@ def launch() -> None:
             name_prefix=prefix_var.get(),
             material=material_var.get(),
             model_origin=origin_var.get(),
+            quality=quality_var.get(),
         )
         log.delete("1.0", "end")
         append("命令: tankextract " + " ".join(argv) + "\n\n")

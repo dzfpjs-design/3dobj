@@ -35,6 +35,7 @@ def main() -> None:
     limits = {
         "precision_m": spec.get("precision_m"),
         "max_faces": spec.get("max_faces"),
+        "quality": spec.get("quality") or "full",
         "model_origin": spec.get("model_origin"),
         "material_name": material_name,
     }
@@ -50,10 +51,13 @@ def main() -> None:
             "threshold, and it must not remove rails, openings, girders or landings."
         ),
         "max_faces": spec.get("max_faces"),
+        "quality": spec.get("quality") or "full",
         "max_faces_note": (
-            "max_faces is a per-object polygon budget. Objects over the budget are kept and listed "
-            "in face_budget_exceeded. Detail parts are not deleted to meet the number."
+            "quality full keeps --segments (default 96) and only reports the budget. "
+            "quality budget retessellates large shells toward max_faces using a 0.10 m chord target. "
+            "The 0.50 m precision value is not used. Rails, stairs, legs, girders and openings stay."
         ),
+        "face_counts": [],
         "material": {
             "name": material_name,
             "blender_shader": "Principled BSDF",
@@ -183,14 +187,16 @@ def _build_tank(tank: dict, segments: int, mode: str, material, limits=None, rep
     if sphere:
         zc = float(sphere["center_z"])
         rs = float(sphere["radius"])
-        pieces.append(("body", *_uv_sphere(cx, cy, zc, rs, segments, max(12, segments // 2))))
+        plan = _shell_plan(limits, rs, segments, "sphere")
+        pieces.append(("body", *_uv_sphere(cx, cy, zc, rs, plan["segments"], plan["rings"])))
         leg_r = float(sphere.get("leg_radius") or 0.3)
         leg_rho = float(sphere.get("leg_rho") or rs * 0.97)
         bottom = float(sphere.get("leg_bottom", z0))
         for index, azimuth in enumerate(sphere.get("legs") or [], start=1):
             a = math.radians(float(azimuth))
             lx, ly = cx + leg_rho * math.cos(a), cy + leg_rho * math.sin(a)
-            pieces.append((f"leg_{index:02d}", *_cylinder(lx, ly, bottom, zc, leg_r, 12, caps=True)))
+            leg_sides = 8 if (limits or {}).get("quality") == "budget" else 12
+            pieces.append((f"leg_{index:02d}", *_cylinder(lx, ly, bottom, zc, leg_r, leg_sides, caps=True)))
         legs = [float(a) for a in sphere.get("legs") or []]
         if sphere.get("bracing") and len(legs) >= 3:
             # X bracing between neighbouring legs, from just above the base to
@@ -207,30 +213,31 @@ def _build_tank(tank: dict, segments: int, mode: str, material, limits=None, rep
                     (x0, y0), (x1, y1) = pts[index], pts[(index + 1) % len(pts)]
                     pieces.append((f"brace_{index + 1:02d}a", *_rod((x0, y0, lo), (x1, y1, hi), 0.05, 8)))
                     pieces.append((f"brace_{index + 1:02d}b", *_rod((x0, y0, hi), (x1, y1, lo), 0.05, 8)))
-        pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"]))
-        _append_girders(pieces, cx, cy, radius, tank.get("wind_girders") or [])
+        pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"], limits))
+        _append_girders(pieces, cx, cy, radius, tank.get("wind_girders") or [], _shell_plan(limits, radius, segments, "flat"))
         return _finish(pieces, tank, mode, material, _group_name(tank), (cx, cy, z0), limits, report)
     roof = tank.get("roof_type", "flat")
     rise = float(tank.get("roof_rise") or 0.0)
     # One closed, manifold shell: bottom plate + wall + roof share their rim vertices.
-    pieces.append(("body", *_closed_body(cx, cy, z0, z1, radius, roof, rise, segments)))
+    plan = _shell_plan(limits, radius, segments, roof)
+    pieces.append(("body", *_closed_body(cx, cy, z0, z1, radius, roof, rise, plan["segments"], plan["rings"])))
     # DOC-01: a measured roof rail is a pipe ring, not a solid parapet.
     # The ladder rails stay separate rods. A gap is cut only where a stair
     # was measured (DOC-09); tanks without a stair keep a closed ring.
     handrail = tank.get("handrail_height")
     if handrail:
-        _append_handrail(pieces, cx, cy, z1, float(handrail), radius, tank.get("handrail_gaps") or [])
+        _append_handrail(pieces, cx, cy, z1, float(handrail), radius, tank.get("handrail_gaps") or [], plan)
     rim = tank.get("top_rim_width")
     if rim:
         pieces.append(
-            ("top_rim", *_annulus(cx, cy, z1, max(radius - 0.05, 0.01), radius + float(rim) * 0.5, segments))
+            ("top_rim", *_annulus(cx, cy, z1, max(radius - 0.05, 0.01), radius + float(rim) * 0.5, plan["segments"]))
         )
-    _append_girders(pieces, cx, cy, radius, tank.get("wind_girders") or [])
+    _append_girders(pieces, cx, cy, radius, tank.get("wind_girders") or [], plan)
     ring = tank.get("base_ring")
     if ring:
         prot = float(ring["protrusion"])
         height = float(ring.get("height") or 0.22)
-        pieces.append(("base_ring", *_band(cx, cy, z0, height, radius, radius + prot, segments)))
+        pieces.append(("base_ring", *_band(cx, cy, z0, height, radius, radius + prot, plan["segments"])))
     stair = tank.get("spiral_stair")
     if stair:
         outer = float(stair["outer_radius"])
@@ -242,7 +249,7 @@ def _build_tank(tank: dict, segments: int, mode: str, material, limits=None, rep
                 *_stair(cx, cy, z0, float(tank["wall_height"]), radius + 0.02, max(outer, radius + width), turns, max(8, int(float(tank["wall_height"]) / 0.2))),
             )
         )
-    pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"]))
+    pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"], limits))
     return _finish(pieces, tank, mode, material, _group_name(tank), (cx, cy, z0), limits, report)
 
 
@@ -336,7 +343,7 @@ def _build_connector(conn: dict, mode: str, material, limits=None, report=None) 
     return objects
 
 
-def _part_pieces(parts, group: str) -> list:
+def _part_pieces(parts, group: str, limits=None) -> list:
     """Primitive parts from the spec (rod / beam / box / prism) -> (name, verts, faces).
 
     Part names carry the group prefix (``Tank_015_pedestal_01``); the piece name is the
@@ -362,7 +369,11 @@ def _part_pieces(parts, group: str) -> list:
             out.append((rest, *_prism(part["polygon"], part["z0"], part["z1"])))
         elif kind == "cylinder":
             cx, cy = part["center"]
-            out.append((rest, *_cylinder(cx, cy, part["z0"], part["z1"], part["radius"], int(part.get("segments", 96)), caps=True)))
+            segs = int(part.get("segments", 96))
+            if (limits or {}).get("quality") == "budget":
+                cap = _shell_plan(limits, float(part.get("radius") or 1.0), segs, "flat")["segments"]
+                segs = max(12, min(segs, cap))
+            out.append((rest, *_cylinder(cx, cy, part["z0"], part["z1"], part["radius"], segs, caps=True)))
         elif kind == "tube":
             out.append((rest, *_tube_mesh(part["points"], part["radius"], int(part.get("segments", 6)), bool(part.get("closed")))))
     return out
@@ -597,6 +608,59 @@ def _group_name(record: dict) -> str:
     return _latin(record.get("export_name") or record.get("id") or "part")
 
 
+def _shell_plan(limits, radius, explicit, roof):
+    """Keep in step with tankextract.deliverable.plan_shell. Blender cannot import the package."""
+    quality = (limits or {}).get("quality") or "full"
+    explicit = max(3, int(explicit))
+    if quality != "budget":
+        rings = max(12, explicit // 2) if roof == "sphere" else (12 if roof == "dome" else 1)
+        return {"segments": explicit, "rings": rings, "quality": "full", "reason": "quality full keeps the requested segment count"}
+    count = _chord_sides(max(radius, 0.1), 0.10, minimum=16, maximum=explicit)
+    if roof == "sphere":
+        rings = _chord_sides(max(radius, 0.1), 0.10, minimum=8, maximum=max(8, explicit // 2))
+        steps = rings
+    elif roof == "dome":
+        rings = _chord_sides(max(radius, 0.1), 0.10, minimum=4, maximum=8)
+        steps = 2 + rings
+    else:
+        rings = 1
+        steps = 3
+    limit = (limits or {}).get("max_faces")
+    reason = "shell chord target 0.10 m; rails, stairs, legs and openings stay"
+    while limit and count > 16 and count * steps > int(limit):
+        count -= 1
+        reason = f"shell segments reduced to fit {int(limit)} polygons; 16-side floor keeps a cylinder"
+    if roof == "sphere":
+        while limit and rings > 8 and count * rings > int(limit):
+            rings -= 1
+            steps = rings
+            reason = f"sphere rings reduced to fit {int(limit)} polygons; legs and rails stay"
+    estimate = count * (rings if roof == "sphere" else steps)
+    if limit and estimate > int(limit):
+        reason = f"shell still estimates {estimate} polygons above {int(limit)} at the floor; the shell was kept"
+    return {"segments": count, "rings": rings, "quality": "budget", "reason": reason}
+
+
+def _chord_sides(radius, tolerance, minimum, maximum):
+    ratio = 1.0 - min(tolerance / radius, 0.999)
+    angle = math.acos(max(-1.0, min(1.0, ratio)))
+    count = maximum if angle <= 1e-6 else math.ceil(math.pi / angle)
+    return int(max(minimum, min(maximum, count)))
+
+
+def _role(name: str) -> str:
+    text = name.lower()
+    if any(key in text for key in ("handrail", "wind_girder", "rail", "brace")):
+        return "tube"
+    if "leg" in text:
+        return "leg"
+    if any(key in text for key in ("stair", "tread", "flight", "landing")):
+        return "stair"
+    if any(key in text for key in ("body", "top_rim", "base_ring", "foundation")):
+        return "shell"
+    return "other"
+
+
 def _note_faces(obj, faces, limit, report) -> None:
     polygons = 0
     triangles = 0
@@ -606,17 +670,33 @@ def _note_faces(obj, faces, limit, report) -> None:
             continue
         polygons += 1
         triangles += size - 2
+    role = _role(obj.name)
     obj["polygon_count"] = polygons
     obj["triangle_count"] = triangles
-    if limit and polygons > int(limit):
+    obj["mesh_role"] = role
+    exceeded = bool(limit) and polygons > int(limit)
+    if exceeded:
         obj["face_budget_exceeded"] = 1
-        if report is not None:
-            report.setdefault("face_budget_exceeded", []).append(
-                {"object": obj.name, "polygons": polygons, "triangles": triangles, "limit": int(limit), "kept": True}
-            )
+    reason = ""
+    if exceeded:
+        reason = {
+            "shell": "shell is already at its roundness floor; cutting further would facet the wall, so the shell was kept",
+            "tube": "pipe section stays 6-sided so it remains a tube; the rail or girder was kept",
+            "leg": "each leg is kept; the section stays round",
+            "stair": "treads and rails are kept; deleting steps would remove the stair",
+            "other": "part kept; the budget does not delete objects",
+        }[role]
+    if report is not None:
+        row = {
+            "object": obj.name, "role": role, "polygons": polygons, "triangles": triangles,
+            "limit": int(limit) if limit else None, "exceeded": exceeded, "kept": True, "reason": reason,
+        }
+        report.setdefault("face_counts", []).append(row)
+        if exceeded:
+            report.setdefault("face_budget_exceeded", []).append(row)
 
 
-def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps) -> None:
+def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps, plan=None) -> None:
     """Pipe ring (top, mid, posts) around a measured roof rail. No solid wall."""
     pipe_r = 0.025
     ring_r = max(radius - 0.08, 0.2)
@@ -625,8 +705,9 @@ def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps) -> None:
         width = max(float(gap.get("width_m") or 0.8), 0.6)
         half = math.degrees(width / (2.0 * max(ring_r, 0.2)))
         openings.append((float(gap["azimuth_deg"]) % 360.0, half))
-    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height, ring_r, pipe_r, openings)))
-    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height * 0.5, ring_r, pipe_r * 0.8, openings)))
+    circ = 16 if not plan or plan.get("quality") != "budget" else max(12, min(24, int(plan["segments"])))
+    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height, ring_r, pipe_r, openings, circ=circ)))
+    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height * 0.5, ring_r, pipe_r * 0.8, openings, circ=circ)))
     circ = 2.0 * math.pi * ring_r
     count = max(4, int(circ / 1.5))
     for index in range(count):
@@ -639,14 +720,15 @@ def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps) -> None:
         pieces.append(("handrail", *_rod((x, y, z_deck), (x, y, z_deck + height), pipe_r, 6)))
 
 
-def _append_girders(pieces, cx, cy, radius, girders) -> None:
+def _append_girders(pieces, cx, cy, radius, girders, plan=None) -> None:
     """Measured shell rings as pipes. The protrusion is the measured stick-out, not a plate."""
+    circ = 16 if not plan or plan.get("quality") != "budget" else max(12, min(24, int(plan["segments"])))
     for index, girder in enumerate(girders or [], start=1):
         prot = max(float(girder.get("protrusion") or 0.08), 0.04)
         pipe_r = prot / 2.0
         pieces.append((
             f"wind_girder_{index:02d}",
-            *_ring_pipe(cx, cy, float(girder["z"]), radius + pipe_r, pipe_r, []),
+            *_ring_pipe(cx, cy, float(girder["z"]), radius + pipe_r, pipe_r, [], circ=circ),
         ))
 
 
@@ -812,8 +894,8 @@ def _revolve(cx, cy, profile, segs):
     return verts, faces
 
 
-def _closed_body(cx, cy, z0, z1, radius, roof, rise, segs):
-    profile = [(0.0, z0), (radius, z0), (radius, z1)] + _roof_profile(z1, radius, roof, rise)
+def _closed_body(cx, cy, z0, z1, radius, roof, rise, segs, roof_rings=12):
+    profile = [(0.0, z0), (radius, z0), (radius, z1)] + _roof_profile(z1, radius, roof, rise, rings=roof_rings)
     return _revolve(cx, cy, profile, segs)
 
 

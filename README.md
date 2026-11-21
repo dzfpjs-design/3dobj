@@ -138,7 +138,8 @@ python -m tankextract --self-test --output /tmp/tank-selftest --no-blender
 | `--max-aspect` | 壁高/直径上限，超过视为烟囱、塔器 | 4 |
 | `--segments` | 白模圆周分段。`--precision` / `--max-faces` 只记录和警告，不削栏杆、开口、管件 | 96 |
 | `--precision` | 记录用精度（米）。审查图建议 0.50，含义未确认，所以不参与减面 | 0.50 |
-| `--max-faces` | 每个网格对象的多边形预算。超出的对象保留，并列入 `face_budget_exceeded` | 2000 |
+| `--quality` | `budget`（命令行默认）只降低罐体/球壳分段；`full` 保持 `--segments`。库函数默认仍是 `full` | budget |
+| `--max-faces` | `budget` 时每个对象的多边形预算。到不了就保留该件，并写出实际多边形数、三角数和原因 | 2000 |
 | `--name-prefix` | 导出名前缀。`Tank_007` → `LA0007`，原编号留在 `name_map.csv` 和 FBX 的 `tank_id` | LA |
 | `--material` | 材质名称。Blender 4.2 写出同名 Phong/Lambert，不是已验证的 3ds Max Standard 类 | Standard |
 | `--local-offset` | FBX 用局部坐标 | 关闭（顶点写绝对坐标） |

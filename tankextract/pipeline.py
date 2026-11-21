@@ -45,7 +45,8 @@ class RunOptions:
     merge: bool = True
     segments: int = 96
     precision_m: float = 0.50  # sagitta of large shells; small parts are kept
-    max_faces: int = 2000  # polygons per mesh object; exceeding this is reported, not deleted
+    max_faces: int = 2000  # per-object polygon budget used when quality == "budget"
+    quality: str = "full"  # full keeps segments; budget retessellates shells only
     name_prefix: str = "LA"
     material_name: str = "Standard"
     model_origin: tuple[float, float, float] | None = None
@@ -664,6 +665,7 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
         "vertical_datum": None,
         "precision_m": options.precision_m,
         "max_faces": options.max_faces,
+        "quality": options.quality,
         "material_name": options.material_name,
         "segments": options.segments,
         "pipes": "measured_wall_pipes_only" if options.pipes else "omitted_for_laser",

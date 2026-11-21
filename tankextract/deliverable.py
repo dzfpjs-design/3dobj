@@ -166,15 +166,90 @@ def _move_end(conn, tank, end: str, platform: dict) -> None:
         conn.x1, conn.y1, conn.z1 = nx, ny, nz
 
 
-def tessellation_segments(explicit: int, precision_m: float | None = None, max_faces: int | None = None) -> int:
-    """Shell segment count actually used.
+# Shell smoothness used only in quality=budget. It is tighter than the 50 cm
+# panel value on purpose: 50 cm is not a licence to strip rails or openings,
+# and it is not what chooses these segment counts.
+SHELL_CHORD_M = 0.10
+SHELL_FLOOR = 16
 
-    ``precision_m`` and ``max_faces`` are recorded for the panel and the report.
-    They do not reduce the count: 50 cm and 2000 faces were not confirmed as
-    thresholds that may delete rails, openings or girders.
+
+def plan_shell(radius: float, explicit: int, max_faces: int | None, roof: str = "flat", quality: str = "full") -> dict:
+    """Tessellation for one large shell (wall, dome, sphere, foundation).
+
+    ``quality="full"`` keeps ``explicit`` (the historical 96). ``quality="budget"``
+    lowers only this shell's segments and rings. It does not delete parts.
+    ``precision`` is intentionally not an argument.
     """
-    del precision_m, max_faces
-    return int(explicit)
+    explicit = max(3, int(explicit))
+    if quality != "budget":
+        rings = max(12, explicit // 2) if roof == "sphere" else (12 if roof == "dome" else 1)
+        return {
+            "segments": explicit,
+            "rings": rings,
+            "quality": "full",
+            "sagitta_m": _sagitta(radius, explicit),
+            "chord_target_m": None,
+            "exceeded_estimate": False,
+            "reason": "quality full keeps the requested segment count",
+        }
+    count = chord_segments(max(radius, 0.1), SHELL_CHORD_M, minimum=SHELL_FLOOR, maximum=explicit)
+    if roof == "sphere":
+        rings = chord_segments(max(radius, 0.1), SHELL_CHORD_M, minimum=8, maximum=max(8, explicit // 2))
+        steps = rings
+    elif roof == "dome":
+        rings = chord_segments(max(radius, 0.1), SHELL_CHORD_M, minimum=4, maximum=8)
+        steps = 2 + rings
+    else:
+        rings = 1
+        steps = 3
+    reason = (
+        f"shell chord target {SHELL_CHORD_M:.2f} m, floor {SHELL_FLOOR} sides; "
+        "rails, stairs, legs and openings are separate objects and are not removed"
+    )
+    while max_faces and count > SHELL_FLOOR and count * steps > int(max_faces):
+        count -= 1
+        reason = f"shell segments reduced to fit {int(max_faces)} polygons; stopped at the {SHELL_FLOOR}-side floor"
+    if roof == "sphere":
+        while max_faces and rings > 8 and count * rings > int(max_faces):
+            rings -= 1
+            steps = rings
+            reason = f"sphere rings reduced to fit {int(max_faces)} polygons; rails and legs are kept"
+    estimate = count * steps
+    exceeded = bool(max_faces) and estimate > int(max_faces)
+    if exceeded:
+        reason = (
+            f"shell still estimates {estimate} polygons at the {SHELL_FLOOR}-side floor "
+            f"with {rings} rings, over {int(max_faces)}; the shell was kept"
+        )
+    return {
+        "segments": count,
+        "rings": rings,
+        "quality": "budget",
+        "sagitta_m": _sagitta(radius, count),
+        "chord_target_m": SHELL_CHORD_M,
+        "exceeded_estimate": exceeded,
+        "reason": reason,
+    }
+
+
+def _sagitta(radius: float, segments: int) -> float:
+    if radius <= 0 or segments <= 0:
+        return 0.0
+    return float(radius * (1.0 - math.cos(math.pi / segments)))
+
+
+def tessellation_segments(
+    explicit: int,
+    precision_m: float | None = None,
+    max_faces: int | None = None,
+    *,
+    quality: str = "full",
+    radius: float = 10.0,
+    roof: str = "flat",
+) -> int:
+    """Segment count a shell actually uses. ``precision_m`` does not change it."""
+    del precision_m
+    return plan_shell(radius, explicit, max_faces, roof, quality)["segments"]
 
 
 def face_budget_row(name: str, polygons: int, limit: int | None) -> dict:

@@ -67,14 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="壁高/直径的最大比值，超过视为烟囱或塔器，默认 4",
     )
     parser.add_argument("--cell-size", type=float, default=0.25, help="水平分箱尺寸（米），默认 0.25")
-    parser.add_argument("--segments", type=int, default=96, help="圆周分段上限，默认 96。实际分段还会受 --precision 和 --max-faces 约束，且不会少于 12")
+    parser.add_argument("--segments", type=int, default=96, help="圆周分段数。--quality full（回归）时原样使用，默认 96")
+    parser.add_argument(
+        "--quality", choices=("full", "budget"), default="budget",
+        help="budget：只降低罐体/球壳等大曲面的分段，使常见单体面数下降，栏杆、踏步、支腿、开口保留；full：保持 --segments，不减面",
+    )
     parser.add_argument(
         "--precision", type=float, default=0.50,
         help="记录用的精度（米），默认 0.50。含义尚未从审查图确认，因此不会拿它去减面或删栏杆、开口、管件",
     )
     parser.add_argument(
         "--max-faces", type=int, default=2000,
-        help="每个网格对象的多边形预算，默认 2000。超出时写入 face_budget 警告并保留几何，不整体减面",
+        help="budget 模式下每个网格对象的多边形预算，默认 2000。到不了就保留该件并写出实际面数和原因。50cm 精度不参与这次减面",
     )
     parser.add_argument("--name-prefix", default="LA", help="罐体导出名前缀，序号沿用 Tank_### 的编号，默认 LA（Tank_007 -> LA0007）")
     parser.add_argument(
@@ -167,6 +171,7 @@ def _options_from_args(args) -> RunOptions:
         segments=args.segments,
         precision_m=args.precision,
         max_faces=args.max_faces,
+        quality=args.quality,
         name_prefix=args.name_prefix,
         material_name=args.material,
         model_origin=tuple(args.model_origin) if args.model_origin else None,

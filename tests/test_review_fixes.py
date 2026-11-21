@@ -1,8 +1,10 @@
 """Review items from the 2026-11-21 checklist. No tank ids are taken from the screenshots."""
 
 import math
+from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageDraw
 
 from tankextract.deliverable import (
     export_name_for,
@@ -10,6 +12,8 @@ from tankextract.deliverable import (
     handrail_gaps,
     is_door,
     latin_part,
+    plan_shell,
+    polygon_counts,
     seat_walkway_ends,
     tessellation_segments,
 )
@@ -39,8 +43,15 @@ class _Conn:
         self.rail_source = "measured"
 
 
-def test_precision_and_face_budget_do_not_drop_detail():
+def test_precision_does_not_choose_segments_and_budget_does():
+    # quality full is the 96-segment regression. 50 cm does not change either mode.
     assert tessellation_segments(96, 0.50, 2000) == 96
+    assert tessellation_segments(96, 0.05, 2000) == 96
+    budget_loose = tessellation_segments(96, 0.50, 2000, quality="budget", radius=10, roof="sphere")
+    budget_tight = tessellation_segments(96, 0.50, 200, quality="budget", radius=10, roof="sphere")
+    assert budget_loose < 96
+    assert budget_tight <= budget_loose
+    assert tessellation_segments(96, 0.05, 2000, quality="budget", radius=10, roof="sphere") == budget_loose
     row = face_budget_row("LA0001_body", 2500, 2000)
     assert row["exceeded"] and row["kept"] and row["polygons"] == 2500
 
@@ -125,6 +136,62 @@ def test_stair_tower_top_opens_toward_the_bridge():
     assert len(deck(opened)["polygon"]) == 4
     span = lambda poly, axis: max(p[axis] for p in poly) - min(p[axis] for p in poly)
     assert span(deck(opened)["polygon"], 1) < span(deck(closed)["polygon"], 1) - 0.5
+
+
+def _draw_mesh(draw, verts, faces, color, origin, scale):
+    pts = [((origin[0] + v[0] * scale), (origin[1] - v[2] * scale)) for v in verts]
+    for face in faces:
+        loop = [pts[i] for i in face]
+        draw.line(loop + [loop[0]], fill=color, width=1)
+
+
+def test_budget_lowers_shell_faces_and_keeps_the_rail(tmp_path):
+    mesh = _module()
+    budget = {"quality": "budget", "max_faces": 2000}
+    for roof, radius in (("flat", 8.0), ("dome", 12.0), ("sphere", 6.0)):
+        planned = plan_shell(radius, 96, 2000, roof, "budget")
+        mirrored = mesh._shell_plan(budget, radius, 96, roof)
+        assert planned["segments"] == mirrored["segments"]
+        assert planned["rings"] == mirrored["rings"]
+    full_body = mesh._closed_body(0, 0, 0, 12, 8, "dome", 1.5, 96, 12)
+    dome = mesh._shell_plan(budget, 8, 96, "dome")
+    budget_body = mesh._closed_body(0, 0, 0, 12, 8, "dome", 1.5, dome["segments"], dome["rings"])
+    full_poly, full_tri = polygon_counts(full_body[1])
+    budget_poly, budget_tri = polygon_counts(budget_body[1])
+    assert budget_poly < full_poly * 0.5
+    assert budget_tri < full_tri * 0.5
+    full_sphere = mesh._uv_sphere(30, 0, 6, 6, 96, 48)
+    sphere = mesh._shell_plan(budget, 6, 96, "sphere")
+    budget_sphere = mesh._uv_sphere(30, 0, 6, 6, sphere["segments"], sphere["rings"])
+    assert polygon_counts(budget_sphere[1])[0] < polygon_counts(full_sphere[1])[0] * 0.25
+    # Same rail, girder and opening exist after the shell is coarsened.
+    circ = max(12, min(24, dome["segments"]))
+    rail, rail_faces = mesh._ring_pipe(0, 0, 12.0, 7.9, 0.025, [(40.0, 12.0)], circ=circ)
+    assert rail and max(v[2] for v in rail) - min(v[2] for v in rail) < 0.08
+    assert all(abs(((math.degrees(math.atan2(v[1], v[0])) - 40.0 + 180) % 360) - 180) > 4 for v in rail)
+    girder, _faces = mesh._ring_pipe(0, 0, 6.0, 8.15, 0.1, [], circ=circ)
+    radii = [math.hypot(v[0], v[1]) for v in girder]
+    assert min(radii) > 8.0 and max(radii) < 8.4
+    loose = mesh._shell_plan({"quality": "budget", "max_faces": 5000}, 15, 96, "sphere")["segments"]
+    tight = mesh._shell_plan({"quality": "budget", "max_faces": 180}, 15, 96, "sphere")["segments"]
+    assert tight < loose
+    assert mesh._shell_plan({"quality": "full", "max_faces": 180}, 15, 96, "sphere")["segments"] == 96
+    image = Image.new("RGB", (960, 420), (24, 26, 28))
+    draw = ImageDraw.Draw(image)
+    draw.text((24, 12), f"full dome {full_poly} polys / {full_tri} tris", fill=(220, 220, 220))
+    draw.text((500, 12), f"budget dome {budget_poly} polys / {budget_tri} tris", fill=(220, 220, 220))
+    full_rail = mesh._ring_pipe(0, 0, 12.0, 7.9, 0.04, [(40.0, 12.0)], circ=16)
+    _draw_mesh(draw, full_body[0], full_body[1], (180, 190, 200), (220, 360), 16)
+    _draw_mesh(draw, full_rail[0], full_rail[1], (80, 220, 140), (220, 360), 16)
+    budget_rail = (rail, rail_faces)
+    _draw_mesh(draw, budget_body[0], budget_body[1], (180, 190, 200), (700, 360), 16)
+    _draw_mesh(draw, budget_rail[0], budget_rail[1], (80, 220, 140), (700, 360), 16)
+    path = tmp_path / "face-budget-compare.png"
+    image.save(path)
+    assert path.stat().st_size > 1000
+    art = Path("/opt/cursor/artifacts")
+    if art.is_dir():
+        image.save(art / "face-budget-compare.png")
 
 
 def test_handrail_gaps_come_only_from_a_measured_stair():
