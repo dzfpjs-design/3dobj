@@ -55,13 +55,13 @@ jobs:
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tankextract-v1.3.0
-          name: TankExtract 1.3.0 Windows
+          tag_name: tankextract-v1.3.1
+          name: TankExtract 1.3.1 Windows
           prerelease: true
           generate_release_notes: false
           body: |
-            Windows 10/11 x64 安装包 1.3.0。不覆盖 1.0.0、1.1.0、1.2.0。
-            budget 下精度是罐体弦高；2000 是一座模型的多边形预算。--quality full 保持 96 段。
+            Windows 10/11 x64 安装包 1.3.1。不覆盖 1.0.0–1.3.0。
+            走道栏杆仅在已测到罐顶平台栏杆、且高度差超过 15 cm 时改用该实测值。
           files: dist/installer/TankExtract-Setup-*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -72,6 +72,25 @@ def test_export_name_keeps_tank_number_and_door_is_conditional():
     assert "door" not in latin_part("body")
 
 
+def test_bridge_rail_uses_measured_platform_height_only():
+    # Numbers from the delivered E sphere FBX index, not a new constant.
+    a = _Tank("Tank_015", 0, 0, 7.9, platform={"radius": 2.0, "z": 67.0, "rail_height": 1.32})
+    b = _Tank("Tank_017", 20, 0, 7.9, platform={"radius": 2.1, "z": 67.0, "rail_height": 1.33})
+    conn = _Conn()
+    conn.tank_a, conn.tank_b = "Tank_015", "Tank_017"
+    conn.handrail_height = 1.041
+    conn.rail_source = "measured"
+    seat_walkway_ends([a, b], [conn])
+    assert abs(conn.handrail_height - 1.33) < 1e-6
+    assert abs(conn.handrail_height_measured - 1.041) < 1e-6
+    assert conn.rail_source == "measured_platform_rail"
+    # No platform rail measurement: keep the walkway's own measurement.
+    bare = _Conn()
+    seat_walkway_ends([_Tank("Tank_019", 0, 0, 2.7), _Tank("Tank_022", 8, 0, 2.7)], [bare])
+    assert bare.handrail_height == 1.2
+    assert bare.handrail_height_measured is None
+
+
 def test_walkway_meets_measured_platform_without_changing_rail_height():
     a = _Tank("Tank_001", 0, 0, 5, platform={"radius": 4.0, "z": 11.5, "rail_height": 1.05})
     b = _Tank("Tank_002", 20, 0, 5)

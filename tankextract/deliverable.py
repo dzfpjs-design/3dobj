@@ -141,6 +141,7 @@ def seat_walkway_ends(tanks, connectors) -> None:
             platform = ((getattr(tank, "accessories", None) or {}).get("roof") or {}).get("platform")
             if platform:
                 _move_end(conn, tank, end, platform)
+        _align_bridge_rail_to_measured_platform(conn, by_name)
 
 
 def _move_end(conn, tank, end: str, platform: dict) -> None:
@@ -265,6 +266,35 @@ def tessellation_segments(
 def face_budget_row(name: str, polygons: int, limit: int | None) -> dict:
     exceeded = bool(limit) and polygons > int(limit)
     return {"object": name, "polygons": polygons, "limit": limit, "exceeded": exceeded, "kept": True}
+
+
+def _align_bridge_rail_to_measured_platform(conn, by_name) -> None:
+    """Set a walkway rail to the measured platform-rail height when they disagree.
+
+    Only platform rails already measured on the joined tanks are used. There is
+    no fallback constant. The previous walkway measurement is kept on
+    ``handrail_height_measured``.
+    """
+    measured = getattr(conn, "handrail_height", None)
+    if measured is None:
+        return
+    heights = []
+    for name in (getattr(conn, "tank_a", ""), getattr(conn, "tank_b", "")):
+        tank = by_name.get(name)
+        if tank is None:
+            continue
+        platform = ((getattr(tank, "accessories", None) or {}).get("roof") or {}).get("platform") or {}
+        if platform.get("rail_height"):
+            heights.append(float(platform["rail_height"]))
+    if not heights:
+        return
+    ordered = sorted(heights)
+    target = ordered[len(ordered) // 2]
+    if abs(float(measured) - target) <= 0.15:
+        return
+    conn.handrail_height_measured = float(measured)
+    conn.handrail_height = float(target)
+    conn.rail_source = "measured_platform_rail"
 
 
 def polygon_counts(faces) -> tuple[int, int]:
