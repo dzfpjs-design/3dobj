@@ -55,13 +55,14 @@ jobs:
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tankextract-v1.0.0
-          name: TankExtract 1.0.0 Windows
+          tag_name: tankextract-v1.1.0
+          name: TankExtract 1.1.0 Windows
           prerelease: true
           generate_release_notes: false
           body: |
-            Windows 10/11 x64 安装包。自带 Python、numpy、scipy、Pillow 和 Blender 4.2.14 LTS，安装后可离线使用。
-            图形界面是开始菜单里的「罐体提取」；命令行是安装目录下的 tankextract.exe。
+            Windows 10/11 x64 安装包 1.1.0。自带 Python、numpy、scipy、Pillow 和 Blender 4.2.14 LTS，安装后可离线使用。
+            不覆盖 tankextract-v1.0.0。图形界面是开始菜单里的「罐体提取」；命令行是安装目录下的 tankextract.exe。
+            参数面板可改面数预算、记录用精度、LA 命名前缀和材质名。精度不会被用来删栏杆或开口。
           files: dist/installer/TankExtract-Setup-*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

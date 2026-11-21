@@ -38,6 +38,7 @@ class Connector:
     handrail_height: float | None
     fill: float
     supports: list[dict] = field(default_factory=list)  # x, y, z_bottom, z_top, size
+    handrail_height_measured: float | None = None
     block: str = ""
     srs: str = ""
     origin: tuple[float, float, float] = (0.0, 0.0, 0.0)

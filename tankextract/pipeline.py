@@ -18,7 +18,8 @@ from tankextract.osgb_reader import OsgbError
 from tankextract.connectors import find_connectors
 from tankextract.grounding import ground_only
 from tankextract.structures import collect_faces, detect_structures, tank_boxes
-from tankextract.sidecar import write_connectors, write_ground_report, write_sidecars, write_structures
+from tankextract.deliverable import assign_export_names, handrail_gaps, seat_walkway_ends
+from tankextract.sidecar import write_connectors, write_ground_report, write_name_map, write_sidecars, write_structures
 from tankextract.treefilter import TreeFilterConfig, colour_stats, judge, sample_colours
 from tankextract.tools import load_osgb_bytes, normalize_child, resolve_blender, resolve_osgconv, resource_path
 
@@ -43,6 +44,11 @@ class RunOptions:
     local_offset: bool = False
     merge: bool = True
     segments: int = 96
+    precision_m: float = 0.50  # sagitta of large shells; small parts are kept
+    max_faces: int = 2000  # polygons per mesh object; exceeding this is reported, not deleted
+    name_prefix: str = "LA"
+    material_name: str = "Standard"
+    model_origin: tuple[float, float, float] | None = None
     no_blender: bool = False
     limit_tiles: int | None = None
     connectors: bool = True
@@ -123,9 +129,12 @@ def run(input_path: Path, output: Path, options: RunOptions, log=print) -> list[
         structures.extend(_detect_structures_all(tanks, connectors, log, struct_stats, pipes=options.pipes,
                                                  structures=options.structures,
                                                  ground_rows=ground_rows if options.grounding else None))
+    seat_walkway_ends(tanks, connectors)
+    name_rows = assign_export_names(tanks, connectors, structures, options.name_prefix)
     output.mkdir(parents=True, exist_ok=True)
     mode = "local" if options.local_offset else "absolute"
-    write_sidecars(tanks, output, mode)
+    write_name_map(name_rows, output)
+    write_sidecars(tanks, output, mode, model_origin=options.model_origin)
     write_connectors(connectors, output, mode)
     write_structures(structures, tanks, output, mode)
     if options.grounding:
@@ -563,6 +572,14 @@ def _local_part(part: dict, origin) -> dict:
                 out[key] = [x - ox, y - oy]
     if "polygon" in out:
         out["polygon"] = [[x - ox, y - oy] for x, y in out["polygon"]]
+    if "points" in out:
+        shifted = []
+        for point in out["points"]:
+            if len(point) == 3:
+                shifted.append([point[0] - ox, point[1] - oy, point[2] - oz])
+            else:
+                shifted.append([point[0] - ox, point[1] - oy])
+        out["points"] = shifted
     for key in ("z0", "z1"):
         if key in out:
             out[key] = out[key] - oz
@@ -576,7 +593,9 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
         records.append(
             {
                 "id": tank.name,
+                "export_name": getattr(tank, "export_name", "") or tank.name,
                 "origin": list(tank.origin),
+                "handrail_gaps": handrail_gaps(tank),
                 "center_local": [lx, ly],
                 "z_base": tank.z_base_local,
                 "radius": tank.radius,
@@ -614,6 +633,7 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
         ox, oy, oz = conn.origin
         links.append({
             "id": conn.name,
+            "export_name": getattr(conn, "export_name", "") or conn.name,
             "kind": conn.kind,
             "tank_a": conn.tank_a,
             "tank_b": conn.tank_b,
@@ -633,13 +653,20 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
     for st in structures or []:
         ox, oy, oz = st.origin
         extra.append({
-            "id": st.name, "kind": st.kind, "parent": st.parent, "origin": list(st.origin),
+            "id": st.name, "export_name": getattr(st, "export_name", "") or st.name,
+            "kind": st.kind, "parent": st.parent, "origin": list(st.origin),
             "anchor_local": [st.anchor[0] - ox, st.anchor[1] - oy, st.anchor[2] - oz],
             "parts": [_local_part(p, st.origin) for p in st.parts], "epsg": st.srs,
         })
     return {
         "coordinate_mode": "local" if options.local_offset else "absolute",
+        "model_origin": list(options.model_origin) if options.model_origin else None,
+        "vertical_datum": None,
+        "precision_m": options.precision_m,
+        "max_faces": options.max_faces,
+        "material_name": options.material_name,
         "segments": options.segments,
+        "pipes": "measured_wall_pipes_only" if options.pipes else "omitted_for_laser",
         "tanks": records,
         "connectors": links,
         "structures": extra,

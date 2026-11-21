@@ -143,22 +143,104 @@ def prism(name, polygon, z0, z1):
             "z0": float(z0), "z1": float(z1)}
 
 
+def tube(name, points, radius, segments=6, closed=False):
+    """One continuous pipe through ``points``. Joints share a ring, so a run is not a row of capped stubs."""
+    return {"name": name, "type": "tube", "points": [list(map(float, p)) for p in points],
+            "radius": float(radius), "segments": int(segments), "closed": bool(closed)}
+
+
 def polyline_rods(name, points, radius):
-    return [rod(name, points[i], points[i + 1], radius) for i in range(len(points) - 1)]
+    """One tube for the whole polyline. The name stays the same as the old per-bay rods."""
+    if len(points) < 2:
+        return []
+    return [tube(name, points, radius)]
 
 
 def railing(prefix, a, b, z_base, height, post_step=1.5, z_base_b=None, top_r=0.025, post_r=0.025):
-    """Top + mid rail and posts along a-b (xy), base height z_base (z_base_b at b for sloped runs)."""
-    zb = z_base if z_base_b is None else z_base_b
-    a3 = np.array([a[0], a[1], z_base]); b3 = np.array([b[0], b[1], zb])
-    up = np.array([0, 0, height])
-    parts = [rod(f"{prefix}_top", a3 + up, b3 + up, top_r), rod(f"{prefix}_mid", a3 + up / 2, b3 + up / 2, top_r * 0.8)]
-    L = float(np.hypot(*(b3[:2] - a3[:2])))
-    n = max(1, int(math.ceil(L / post_step)))
-    for k in range(n + 1):
-        p = a3 + (b3 - a3) * (k / n)
-        parts.append(rod(f"{prefix}_posts", p, p + up, post_r))
+    """Top + mid pipe and posts along a-b. The rails are tubes, not a solid plate."""
+    return railing_polyline(prefix, [a, b], z_base, height, post_step=post_step, z_end=z_base_b,
+                            top_r=top_r, post_r=post_r)
+
+
+def railing_polyline(prefix, points, z_base, height, post_step=1.5, z_end=None, top_r=0.025, post_r=0.025, closed=False):
+    """One top tube, one mid tube, and posts. ``points`` are xy pairs; z rises linearly if ``z_end`` is set."""
+    pts = [np.array(p[:2], dtype=float) for p in points]
+    if len(pts) < 2:
+        return []
+    if z_end is None:
+        zs = [float(z_base)] * len(pts)
+    else:
+        zs = [float(z_base) + (float(z_end) - float(z_base)) * i / (len(pts) - 1) for i in range(len(pts))]
+    top = [(p[0], p[1], z + height) for p, z in zip(pts, zs)]
+    mid = [(p[0], p[1], z + height * 0.5) for p, z in zip(pts, zs)]
+    parts = [tube(f"{prefix}_top", top, top_r, closed=closed), tube(f"{prefix}_mid", mid, top_r * 0.8, closed=closed)]
+    length = 0.0
+    for a, b in zip(pts, pts[1:]):
+        length += float(np.hypot(*(b - a)))
+    if closed and len(pts) > 2:
+        length += float(np.hypot(*(pts[0] - pts[-1])))
+    steps = max(1, int(math.ceil(length / post_step)))
+    for k in range(steps + (0 if closed else 1)):
+        dist = length * (k / steps)
+        p, z = _point_at(pts, zs, dist, closed)
+        parts.append(rod(f"{prefix}_posts", (p[0], p[1], z), (p[0], p[1], z + height), post_r))
     return parts
+
+
+def _point_at(pts, zs, dist, closed):
+    pairs = list(zip(pts, pts[1:], zs, zs[1:]))
+    if closed:
+        pairs.append((pts[-1], pts[0], zs[-1], zs[0]))
+    walked = 0.0
+    for a, b, za, zb in pairs:
+        step = float(np.hypot(*(b - a)))
+        if walked + step >= dist - 1e-9 or step == 0:
+            f = 0.0 if step == 0 else min(1.0, (dist - walked) / step)
+            return a + (b - a) * f, za + (zb - za) * f
+        walked += step
+    return pts[-1], zs[-1]
+
+
+def _circular_runs(poly, skip):
+    """Chains of a closed polyline, dropping edges whose midpoint is flagged."""
+    n = len(poly)
+    if n == 0:
+        return []
+    if not any(skip):
+        return [list(poly)]
+    runs = []
+    current = []
+    for k in range(n):
+        if skip[k]:
+            if len(current) >= 2:
+                runs.append(current)
+            current = []
+            continue
+        if not current:
+            current = [poly[k]]
+        current.append(poly[(k + 1) % n])
+    if len(current) >= 2:
+        if runs and not skip[0] and not skip[-1] and current[-1] == runs[0][0]:
+            runs[0] = current[:-1] + runs[0]
+        else:
+            runs.append(current)
+    return runs
+
+
+def _open_deck_polygon(cx, cy, length, width, deg, open_sides, opening):
+    """Rectangle, with each open side moved inward so the ladder/bridge is not covered."""
+    corners = rect_corners(cx, cy, length, width, deg)
+    if not open_sides:
+        return corners
+    u, v = _rot(deg)
+    inward = [v, -u, -v, u]
+    bite = min(float(opening), 0.45 * min(length, width))
+    pts = [np.array(p, dtype=float) for p in corners]
+    for k in open_sides:
+        shift = inward[int(k) % 4] * bite
+        pts[int(k) % 4] = pts[int(k) % 4] + shift
+        pts[(int(k) + 1) % 4] = pts[(int(k) + 1) % 4] + shift
+    return [tuple(map(float, p)) for p in pts]
 
 
 def rect_corners(cx, cy, length, width, deg):
@@ -287,13 +369,34 @@ def stair_tower_parts(t: dict, prefix: str) -> list:
             end = c + u * sgn * (L / 2 - land / 2)
             poly = rect_corners(end[0], end[1], land, W - 0.1, deg)
             parts.append(prism(f"{prefix}_landing_{i:02d}", poly, z - 0.05, z))
-    # Top: full deck plate + perimeter rail.
-    parts.append(prism(f"{prefix}_top_deck", rect_corners(cx, cy, L - 0.05, W - 0.05, deg), top - 0.08, top))
+    # Top deck leaves the walkway / ladder side open so the flight can reach the bridge.
+    parts.append(prism(
+        f"{prefix}_top_deck",
+        _open_deck_polygon(cx, cy, L - 0.05, W - 0.05, deg, t.get("open_sides") or [], 0.9),
+        top - 0.08, top,
+    ))
     open_sides = set(t.get("open_sides", []))
+    # Consecutive closed sides become one pipe, so the corner is a bend and not a gap between stubs.
+    run = []
+    runs = []
     for k in range(4):
         if k in open_sides:
+            if len(run) >= 2:
+                runs.append(run)
+            run = []
             continue
-        parts += railing(f"{prefix}_rail_top", ring[k], ring[k + 1], top, rh)
+        if not run:
+            run = [ring[k]]
+        run.append(ring[k + 1])
+    if len(run) >= 2:
+        if runs and not open_sides:
+            runs[0] = run[:-1] + runs[0]
+        else:
+            runs.append(run)
+    closed = not open_sides
+    for run in runs:
+        pts = run[:-1] if closed and len(run) > 2 and np.allclose(run[0], run[-1]) else run
+        parts += railing_polyline(f"{prefix}_rail_top", pts, top, rh, closed=closed and len(runs) == 1)
     for j, br in enumerate(t.get("bridges", []), start=1):
         parts.append(prism(f"{prefix}_bridge_{j:02d}", br["polygon"], br["z"] - 0.08, br["z"]))
     return parts
@@ -895,12 +998,14 @@ def platform_parts(prefix: str, tank, info: dict, segs: int = 24) -> list:
         poly = [(cx + rp * math.cos(2 * math.pi * k / segs), cy + rp * math.sin(2 * math.pi * k / segs)) for k in range(segs)]
         parts.append(prism(f"{prefix}_platform", poly, zp - 0.1, zp))
         rh = pf.get("rail_height") or 1.05
+        gap = max(8.0, math.degrees(0.6 / max(rp, 0.3)))
+        skip = []
         for k in range(segs):
             a_mid = math.degrees(2 * math.pi * (k + 0.5) / segs) % 360
-            gap = max(8.0, math.degrees(0.6 / max(rp, 0.3)))
-            if any(abs(((a_mid - o + 180) % 360) - 180) < gap for o in opens):
-                continue
-            parts += railing(f"{prefix}_platform_rail", poly[k], poly[(k + 1) % segs], zp, rh, post_step=1.2)
+            skip.append(any(abs(((a_mid - o + 180) % 360) - 180) < gap for o in opens))
+        for run in _circular_runs(poly, skip):
+            parts += railing_polyline(f"{prefix}_platform_rail", run, zp, rh, post_step=1.2,
+                                      closed=len(run) == segs and not any(skip))
     surf = info.get("surface")
     for j, w in enumerate(info.get("walkways", []), start=1):
         a = math.radians(w["azimuth_deg"])
@@ -913,14 +1018,28 @@ def platform_parts(prefix: str, tank, info: dict, segs: int = 24) -> list:
         else:
             zz = np.full_like(rr, info.get("platform", {}).get("z", tank.z_base + tank.total_height))
         c0 = np.array([cx, cy]) + nvec * w["offset"]
+        left, right = [], []
         for k in range(len(rr) - 1):
             p0 = c0 + uvec * rr[k]
             p1 = c0 + uvec * rr[k + 1]
             parts.append(beam(f"{prefix}_roof_walkway_{j:02d}", (*p0, zz[k]), (*p1, zz[k + 1]), w["width"], 0.08))
-            for sgn, tag in ((1, "L"), (-1, "R")):
+            if k == 0:
+                for sgn, bucket in ((1, left), (-1, right)):
+                    e = nvec * sgn * (w["width"] / 2 - 0.03)
+                    bucket.append((*(p0 + e), zz[k]))
+            for sgn, bucket in ((1, left), (-1, right)):
                 e = nvec * sgn * (w["width"] / 2 - 0.03)
-                parts += railing(f"{prefix}_roof_walkway_{j:02d}_rail_{tag}", p0 + e, p1 + e, zz[k], w["rail_height"],
-                                 post_step=1.5, z_base_b=zz[k + 1])
+                bucket.append((*(p1 + e), zz[k + 1]))
+        for tag, bucket in (("L", left), ("R", right)):
+            parts.append(tube(f"{prefix}_roof_walkway_{j:02d}_rail_{tag}_top",
+                              [(p[0], p[1], p[2] + w["rail_height"]) for p in bucket], 0.025))
+            parts.append(tube(f"{prefix}_roof_walkway_{j:02d}_rail_{tag}_mid",
+                              [(p[0], p[1], p[2] + w["rail_height"] * 0.5) for p in bucket], 0.02))
+            for index, p in enumerate(bucket):
+                if index % 2:
+                    continue
+                parts.append(rod(f"{prefix}_roof_walkway_{j:02d}_rail_{tag}_posts",
+                                 p, (p[0], p[1], p[2] + w["rail_height"]), 0.025))
     return parts
 
 
@@ -1004,7 +1123,10 @@ def wall_stair_parts(prefix: str, tank, st: dict, rail: float = 1.0) -> list:
     a0 = math.radians(st["az_bottom_deg"])
     sweep = math.radians(st["sweep_deg"]) * (1 if st["direction"] == "ccw" else -1)
     z0, z1 = st["z_bottom"], st["z_top"]
-    ri, ro = st["inner_radius"], st["outer_radius"]
+    # The measured inner radius sits outside the shell. The mesh is pulled onto the wall
+    # so the flight and the top landing meet the tank instead of stopping short of it.
+    ro = max(float(st["outer_radius"]), float(tank.radius) + max(float(st.get("width") or 0.6), 0.6))
+    ri = float(tank.radius) + 0.02
     n = max(4, int(round((z1 - z0) / 0.2)))
     rm = 0.5 * (ri + ro)
     for i in range(n):
@@ -1029,10 +1151,18 @@ def wall_stair_parts(prefix: str, tank, st: dict, rail: float = 1.0) -> list:
             parts += polyline_rods(f"{prefix}_stair_rail", mid, 0.02)
             for j in range(0, m + 1, 2):
                 parts.append(rod(f"{prefix}_stair_rail_posts", pts[j], up[j], 0.025))
-    # top landing
+    # top landing spans from the shell to the outer stringer, so it meets the wall.
     at = a0 + sweep
-    parts.append(box(f"{prefix}_stair_landing", (cx + rm * math.cos(at), cy + rm * math.sin(at), z1 - 0.05),
-                     (1.0, ro - ri, 0.1), math.degrees(at) + 90))
+    eave = tank.z_base + tank.wall_height
+    z_land = max(z1, eave) if abs(z1 - eave) < 0.8 else z1
+    span = max(ro - tank.radius, 0.4)
+    mid_r = tank.radius + span / 2
+    parts.append(box(
+        f"{prefix}_stair_landing",
+        (cx + mid_r * math.cos(at), cy + mid_r * math.sin(at), z_land - 0.05),
+        (max(float(st.get("width") or 0.8), 0.8), span + 0.04, 0.1),
+        math.degrees(at) + 90,
+    ))
     return parts
 
 
@@ -1192,8 +1322,11 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool =
             if min(sp.get("length", 0), sp.get("width", 0)) < 1.5 or sp["z_top"] - sp["z_bottom"] < 4.0:
                 continue
             deck_z = max(conn.z0, conn.z1)
+            measured_rail = conn.handrail_height
             t = detect_stair_tower(F, sp["x"], sp["y"], sp["z_bottom"], deck_z + 0.2, sp["length"], sp["width"], sp["axis_deg"],
-                                   rail_height=conn.handrail_height or 1.05)
+                                   rail_height=measured_rail if measured_rail else 1.05)
+            if t:
+                t["rail_height_source"] = "measured" if measured_rail else "default_1.05"
             if not t:
                 continue
             side, bridge = _deck_side(t, conn)
@@ -1205,6 +1338,8 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool =
         name = f"Stair_{k:03d}"
         st = Structure(name=name, kind="stair_tower", parent=conn.name, anchor=(t["x"], t["y"], t["z_ground"]))
         st.dims = {k_: t[k_] for k_ in ("x", "y", "length", "width", "axis_deg", "z_ground", "z_top", "rise", "levels", "levels_measured")}
+        st.dims["rail_height_m"] = t.get("rail_height")
+        st.dims["rail_height_source"] = t.get("rail_height_source", "")
         st.dims["flights"] = len(t["levels"])
         st.dims["connector"] = conn.name
         st.dims["bridge_gap"] = t["bridges"][0]["gap"] if t["bridges"] else 0.0
@@ -1306,6 +1441,8 @@ def detect_structures(tanks, connectors, F: np.ndarray, log=print, pipes: bool =
                 acc["wall_stair"] = st
                 parts += wall_stair_parts(name, tank, st, rail=tank.handrail_height or 1.0)
         plat = roof_platform(F, tank, _conn_az(tank, connectors))
+        if plat and acc.get("wall_stair"):
+            plat.setdefault("open_azimuths", []).append(acc["wall_stair"]["az_top_deg"])
         if plat:
             acc["roof"] = {k: v for k, v in plat.items() if k != "surface"}
             parts += platform_parts(name, tank, plat)

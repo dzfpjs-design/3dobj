@@ -126,10 +126,12 @@ def test_blender_sphere_and_handrail(tmp_path):
     spec = json.loads((out / "tanks_spec.json").read_text(encoding="utf-8"))
     base = spec["tanks"][0]
     sphere = dict(base, id="Tank_S", roof_type="sphere", wall_height=0.0, roof_rise=0.0, handrail_height=None)
+    sphere.pop("export_name", None)
     sphere["sphere"] = {"center_z": base["z_base"] + 9.0, "radius": 6.0, "legs": [0, 90, 180, 270],
                         "leg_rho": 5.8, "leg_radius": 0.3, "leg_bottom": base["z_base"],
                         "leg_contact_z": base["z_base"] + 7.5, "bracing": "X"}
     railed = dict(base, id="Tank_H", roof_type="dome", roof_rise=1.5, handrail_height=1.1, sphere=None)
+    railed.pop("export_name", None)
     spec["tanks"] = [sphere, railed]
     x, y = base["center_local"]
     z = base["z_base"] + 12.0

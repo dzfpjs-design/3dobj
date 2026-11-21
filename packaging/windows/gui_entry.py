@@ -39,6 +39,11 @@ def main() -> None:
     local_var = tk.BooleanVar(value=True)
     tree_var = tk.BooleanVar(value=False)
     exclude_var = tk.StringVar()
+    faces_var = tk.StringVar(value="2000")
+    precision_var = tk.StringVar(value="0.50")
+    prefix_var = tk.StringVar(value="LA")
+    material_var = tk.StringVar(value="Standard")
+    origin_var = tk.StringVar()
     blender = bundled_blender()
     status = tk.StringVar(value="Blender: " + (blender or "安装目录或本机已安装的 Blender"))
 
@@ -82,6 +87,18 @@ def main() -> None:
     row.pack(anchor="w", pady=4)
     ttk.Label(row, text="排除罐编号（如 Tank_001,Tank_059）").pack(side="left")
     ttk.Entry(row, textvariable=exclude_var, width=40).pack(side="left", padx=6)
+    grid = ttk.Frame(opts)
+    grid.pack(anchor="w", pady=4)
+    ttk.Label(grid, text="面数/单体（超出只警告，不删细节）").grid(row=0, column=0, sticky="w")
+    ttk.Entry(grid, textvariable=faces_var, width=8).grid(row=0, column=1, padx=4)
+    ttk.Label(grid, text="精度 m（记录，不减面）").grid(row=0, column=2, sticky="w", padx=(12, 0))
+    ttk.Entry(grid, textvariable=precision_var, width=8).grid(row=0, column=3, padx=4)
+    ttk.Label(grid, text="命名前缀").grid(row=1, column=0, sticky="w")
+    ttk.Entry(grid, textvariable=prefix_var, width=8).grid(row=1, column=1, padx=4)
+    ttk.Label(grid, text="材质名").grid(row=1, column=2, sticky="w", padx=(12, 0))
+    ttk.Entry(grid, textvariable=material_var, width=12).grid(row=1, column=3, padx=4)
+    ttk.Label(grid, text="约定原点 X,Y,Z（空=metadata）").grid(row=2, column=0, sticky="w")
+    ttk.Entry(grid, textvariable=origin_var, width=28).grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
 
     ttk.Label(frame, textvariable=status).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
     log = scrolledtext.ScrolledText(frame, height=16, wrap="word")
@@ -105,6 +122,15 @@ def main() -> None:
             argv.append("--local-offset")
         if tree_var.get():
             argv.append("--no-tree-filter")
+        argv.extend(["--max-faces", faces_var.get().strip() or "2000"])
+        argv.extend(["--precision", precision_var.get().strip() or "0.50"])
+        argv.extend(["--name-prefix", prefix_var.get().strip() or "LA"])
+        argv.extend(["--material", material_var.get().strip() or "Standard"])
+        origin = origin_var.get().replace("，", ",").strip()
+        if origin:
+            parts = [p.strip() for p in origin.split(",")]
+            if len(parts) == 3:
+                argv.extend(["--model-origin", *parts])
         text = exclude_var.get().replace("，", ",").strip()
         if text:
             argv.extend(["--exclude", text])

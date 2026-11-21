@@ -90,7 +90,9 @@ Write-Host "unicode zip ok"
 
 $self = Join-Path $work ([string]::new([char[]](0x81EA, 0x68C0)))
 Invoke-Tankextract @("--self-test", "--output", $self, "--reader", "python", "--local-offset", "--no-tree-filter") "selftest"
-$fbx = Join-Path $self "tanks\Tank_001.fbx"
+$fbx = Join-Path $self "tanks\LA0001.fbx"
+$map = Get-Content (Join-Path $self "tanks\name_map.csv") -Raw -Encoding UTF8
+if ($map -notmatch "LA0001" -or $map -notmatch "Tank_001") { throw "name map lost Tank_001 -> LA0001" }
 $report = Join-Path $self "tanks\blender_report.json"
 if (-not (Test-Path $fbx)) { throw "self-test did not write $fbx" }
 if (-not (Test-Path $report)) { throw "self-test did not write blender_report.json" }

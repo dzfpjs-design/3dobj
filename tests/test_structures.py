@@ -102,6 +102,8 @@ def _parts_zmin(parts):
             z.append(min(p["p0"][2], p["p1"][2]) - (p["radius"] if p["p0"][:2] != p["p1"][:2] else 0.0))
         elif k in ("prism", "cylinder"):
             z.append(p["z0"])
+        elif k == "tube":
+            z.append(min(pt[2] for pt in p["points"]) - p["radius"])
     return min(z)
 
 

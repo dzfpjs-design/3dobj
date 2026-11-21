@@ -11,6 +11,7 @@ from tankextract.model import Tank
 
 _CSV_FIELDS = [
     "id",
+    "export_name",
     "block",
     "srs",
     "X",
@@ -76,7 +77,16 @@ _CSV_FIELDS = [
 ]
 
 
-def write_sidecars(tanks: list[Tank], output: Path, coordinate_mode: str) -> None:
+def write_name_map(rows: list[dict], output: Path) -> None:
+    """Latin export code -> original Tank_### / Connector_### / Stair_###."""
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "name_map.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["export_name", "source_id", "kind"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_sidecars(tanks: list[Tank], output: Path, coordinate_mode: str, model_origin=None, vertical_datum=None) -> None:
     output.mkdir(parents=True, exist_ok=True)
     _write_geojson(tanks, output / "tanks.geojson", coordinate_mode)
     _write_csv(tanks, output / "tanks.csv")
@@ -90,13 +100,20 @@ def write_sidecars(tanks: list[Tank], output: Path, coordinate_mode: str) -> Non
         slug = _srs_slug(srs)
         (output / f"tanks_{slug}.prj").write_text(_prj_text(srs), encoding="utf-8")
         (output / "tanks.prj").write_text(_prj_text(srs), encoding="utf-8")
+        agreed = list(model_origin) if model_origin is not None else (list(origin) if coordinate_mode == "local" else None)
         (output / "srs_origin.json").write_text(
             json.dumps(
                 {
                     "srs": srs,
                     "origin": list(origin),
+                    "model_origin": agreed,
                     "coordinate_mode": coordinate_mode,
-                    "note": "FBX 顶点坐标系见 coordinate_mode；本文件与 geojson/csv 的 X/Y/Z 始终是绝对坐标。",
+                    "vertical_datum": vertical_datum,
+                    "note": (
+                        "Sidecar X/Y/Z stay in absolute SRS metres. "
+                        "When coordinate_mode is local, FBX vertices are absolute minus model_origin, "
+                        "so that agreed point is (0,0,0). vertical_datum is null when the source does not name one."
+                    ),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -140,7 +157,7 @@ def _write_csv(tanks: list[Tank], path: Path) -> None:
 
 _CONNECTOR_FIELDS = [
     "id", "kind", "tank_a", "tank_b", "x0", "y0", "z0", "x1", "y1", "z1", "length_m", "slope_deg",
-    "width_m", "depth_m", "handrail_height_m", "handrail_source", "rail_sides_seen", "support_count", "supports", "fill", "srs",
+    "export_name", "width_m", "depth_m", "handrail_height_m", "handrail_height_measured_m", "handrail_source", "rail_sides_seen", "support_count", "supports", "fill", "srs",
 ]
 
 
@@ -155,13 +172,15 @@ def write_connectors(connectors: list[Connector], output: Path, coordinate_mode:
         for conn in connectors:
             run = conn.length
             writer.writerow({
-                "id": conn.name, "kind": conn.kind, "tank_a": conn.tank_a, "tank_b": conn.tank_b,
+                "id": conn.name, "export_name": getattr(conn, "export_name", "") or "",
+                "kind": conn.kind, "tank_a": conn.tank_a, "tank_b": conn.tank_b,
                 "x0": f"{conn.x0:.3f}", "y0": f"{conn.y0:.3f}", "z0": f"{conn.z0:.3f}",
                 "x1": f"{conn.x1:.3f}", "y1": f"{conn.y1:.3f}", "z1": f"{conn.z1:.3f}",
                 "length_m": f"{run:.3f}",
                 "slope_deg": f"{math.degrees(math.atan2(conn.z1 - conn.z0, run)) if run > 0 else 0.0:.2f}",
                 "width_m": f"{conn.width:.3f}", "depth_m": f"{conn.depth:.3f}",
                 "handrail_height_m": "" if conn.handrail_height is None else f"{conn.handrail_height:.3f}",
+                "handrail_height_measured_m": "" if getattr(conn, "handrail_height_measured", None) is None else f"{conn.handrail_height_measured:.3f}",
                 "handrail_source": conn.rail_source, "rail_sides_seen": "".join(conn.rail_sides),
                 "support_count": len(conn.supports),
                 "supports": json.dumps([{k: round(v, 3) if isinstance(v, float) else v for k, v in sp.items()} for sp in conn.supports]),

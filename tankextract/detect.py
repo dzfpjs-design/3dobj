@@ -1412,6 +1412,7 @@ def _spiral_stair(outer_pts, center, radius, z_base, wall_h) -> dict | None:
         "turns": float(turns),
         "z_base": float(z_base),
         "height": float(wall_h),
+        "az_top_deg": float(np.degrees(aa[-1]) % 360.0),
     }
 
 

@@ -22,6 +22,11 @@ def build_cli_args(
     local_offset: bool = False,
     no_tree_filter: bool = False,
     exclude: str = "",
+    max_faces: int | None = None,
+    precision_m: float | None = None,
+    name_prefix: str | None = None,
+    material: str | None = None,
+    model_origin: str = "",
 ) -> list[str]:
     """Arguments passed to ``tankextract.cli.main`` (no program name)."""
     args = ["--input", input_path, "--output", output_path]
@@ -29,6 +34,19 @@ def build_cli_args(
         args.append("--local-offset")
     if no_tree_filter:
         args.append("--no-tree-filter")
+    if max_faces is not None:
+        args.extend(["--max-faces", str(int(max_faces))])
+    if precision_m is not None:
+        args.extend(["--precision", f"{float(precision_m):g}"])
+    if name_prefix:
+        args.extend(["--name-prefix", name_prefix.strip()])
+    if material:
+        args.extend(["--material", material.strip()])
+    origin = model_origin.replace("，", ",").strip()
+    if origin:
+        parts = [p.strip() for p in origin.split(",")]
+        if len(parts) == 3:
+            args.extend(["--model-origin", *parts])
     text = exclude.replace("，", ",").strip()
     if text:
         args.extend(["--exclude", text])
@@ -55,6 +73,11 @@ def launch() -> None:
     local_var = tk.BooleanVar(value=True)
     tree_var = tk.BooleanVar(value=False)
     exclude_var = tk.StringVar()
+    faces_var = tk.StringVar(value="2000")
+    precision_var = tk.StringVar(value="0.50")
+    prefix_var = tk.StringVar(value="LA")
+    material_var = tk.StringVar(value="Standard")
+    origin_var = tk.StringVar()
     blender = resolve_blender(None)
     status = tk.StringVar(value="Blender: " + (blender or "未找到"))
 
@@ -101,6 +124,18 @@ def launch() -> None:
     row.pack(anchor="w", pady=4)
     ttk.Label(row, text="排除罐编号（如 Tank_001,Tank_059）").pack(side="left")
     ttk.Entry(row, textvariable=exclude_var, width=40).pack(side="left", padx=6)
+    grid = ttk.Frame(opts)
+    grid.pack(anchor="w", pady=4)
+    ttk.Label(grid, text="面数/单体（超出只警告，不删细节）").grid(row=0, column=0, sticky="w")
+    ttk.Entry(grid, textvariable=faces_var, width=8).grid(row=0, column=1, padx=4)
+    ttk.Label(grid, text="精度 m（记录，不减面）").grid(row=0, column=2, sticky="w", padx=(12, 0))
+    ttk.Entry(grid, textvariable=precision_var, width=8).grid(row=0, column=3, padx=4)
+    ttk.Label(grid, text="命名前缀").grid(row=1, column=0, sticky="w")
+    ttk.Entry(grid, textvariable=prefix_var, width=8).grid(row=1, column=1, padx=4)
+    ttk.Label(grid, text="材质名").grid(row=1, column=2, sticky="w", padx=(12, 0))
+    ttk.Entry(grid, textvariable=material_var, width=12).grid(row=1, column=3, padx=4)
+    ttk.Label(grid, text="约定原点 X,Y,Z（空=metadata）").grid(row=2, column=0, sticky="w")
+    ttk.Entry(grid, textvariable=origin_var, width=28).grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
 
     ttk.Label(frame, textvariable=status).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
     log = scrolledtext.ScrolledText(frame, height=16, wrap="word")
@@ -168,6 +203,11 @@ def launch() -> None:
             local_offset=bool(local_var.get()),
             no_tree_filter=bool(tree_var.get()),
             exclude=exclude_var.get(),
+            max_faces=int(faces_var.get() or "2000"),
+            precision_m=float(precision_var.get() or "0.5"),
+            name_prefix=prefix_var.get(),
+            material=material_var.get(),
+            model_origin=origin_var.get(),
         )
         log.delete("1.0", "end")
         append("命令: tankextract " + " ".join(argv) + "\n\n")

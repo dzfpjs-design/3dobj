@@ -51,6 +51,7 @@ class Tank:
         ring = self.base_ring or {}
         return {
             "id": self.name,
+            "export_name": getattr(self, "export_name", "") or "",
             "block": self.block,
             "srs": self.srs,
             "origin_x": self.origin[0],

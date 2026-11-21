@@ -67,11 +67,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="壁高/直径的最大比值，超过视为烟囱或塔器，默认 4",
     )
     parser.add_argument("--cell-size", type=float, default=0.25, help="水平分箱尺寸（米），默认 0.25")
-    parser.add_argument("--segments", type=int, default=96, help="重建圆周分段数，默认 96")
+    parser.add_argument("--segments", type=int, default=96, help="圆周分段上限，默认 96。实际分段还会受 --precision 和 --max-faces 约束，且不会少于 12")
+    parser.add_argument(
+        "--precision", type=float, default=0.50,
+        help="记录用的精度（米），默认 0.50。含义尚未从审查图确认，因此不会拿它去减面或删栏杆、开口、管件",
+    )
+    parser.add_argument(
+        "--max-faces", type=int, default=2000,
+        help="每个网格对象的多边形预算，默认 2000。超出时写入 face_budget 警告并保留几何，不整体减面",
+    )
+    parser.add_argument("--name-prefix", default="LA", help="罐体导出名前缀，序号沿用 Tank_### 的编号，默认 LA（Tank_007 -> LA0007）")
+    parser.add_argument(
+        "--material", default="Standard",
+        help="FBX 材质名称，默认 Standard。Blender 写出的是同名 Phong/Lambert 表面，不是已经验证过的 3ds Max Standard 材质类",
+    )
+    parser.add_argument(
+        "--model-origin", nargs=3, type=float, default=None, metavar=("X", "Y", "Z"),
+        help="约定局部原点的绝对坐标。省略时，局部模式用 metadata 的 SRSOrigin。不知道高程基准时不填写假值",
+    )
     parser.add_argument(
         "--local-offset",
         action="store_true",
-        help="FBX 顶点使用相对 SRSOrigin 的局部坐标（避免大坐标的 float32 精度损失）。侧车文件始终写绝对坐标",
+        help="FBX 顶点使用相对约定原点的局部坐标（默认是 metadata 的 SRSOrigin，可用 --model-origin 替换）。侧车文件始终保留绝对坐标",
+    )
+    parser.add_argument(
+        "--absolute",
+        action="store_true",
+        help="与默认相同：FBX 顶点写绝对坐标。和 --local-offset 同时给出时以绝对坐标为准",
     )
     parser.add_argument("--merge", action="store_true", help="额外输出合并后的 tanks_all.fbx")
     parser.add_argument("--no-merge", action="store_true", help="不输出合并 FBX（默认会输出）")
@@ -140,9 +162,14 @@ def _options_from_args(args) -> RunOptions:
         cell_size=args.cell_size,
         max_base_above_ground=args.max_base_above_ground,
         max_aspect=args.max_aspect,
-        local_offset=args.local_offset,
+        local_offset=bool(args.local_offset) and not args.absolute,
         merge=bool(args.merge or not args.no_merge),
         segments=args.segments,
+        precision_m=args.precision,
+        max_faces=args.max_faces,
+        name_prefix=args.name_prefix,
+        material_name=args.material,
+        model_origin=tuple(args.model_origin) if args.model_origin else None,
         no_blender=args.no_blender,
         limit_tiles=args.limit_tiles,
         connectors=not args.no_connectors,

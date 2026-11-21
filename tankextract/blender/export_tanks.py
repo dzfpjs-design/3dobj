@@ -28,15 +28,53 @@ def main() -> None:
     scene = bpy.context.scene
     scene.unit_settings.system = "METRIC"
     scene.unit_settings.scale_length = 1.0
-    material = _white_material()
+    material_name = str(spec.get("material_name") or "Standard")
+    material = _white_material(material_name)
     mode = spec.get("coordinate_mode", "absolute")
     segments = int(spec.get("segments", 96))
-    report = {"coordinate_mode": mode, "files": []}
+    limits = {
+        "precision_m": spec.get("precision_m"),
+        "max_faces": spec.get("max_faces"),
+        "model_origin": spec.get("model_origin"),
+        "material_name": material_name,
+    }
+    report = {
+        "coordinate_mode": mode,
+        "model_origin": spec.get("model_origin"),
+        "vertical_datum": spec.get("vertical_datum"),
+        "precision_m": spec.get("precision_m"),
+        "precision_applied": False,
+        "precision_note": (
+            "precision_m is stored and shown in the parameter panel. "
+            "It is not applied as a chord-error cut: 50 cm was not confirmed as a simplification "
+            "threshold, and it must not remove rails, openings, girders or landings."
+        ),
+        "max_faces": spec.get("max_faces"),
+        "max_faces_note": (
+            "max_faces is a per-object polygon budget. Objects over the budget are kept and listed "
+            "in face_budget_exceeded. Detail parts are not deleted to meet the number."
+        ),
+        "material": {
+            "name": material_name,
+            "blender_shader": "Principled BSDF",
+            "fbx_note": (
+                "Blender 4.2's FBX exporter writes this as a Phong/Lambert surface with the given name. "
+                "That is not a verified 3ds Max Standard material class."
+            ),
+        },
+        "pipes_note": (
+            "Process piping, pipe racks and the orange sphere-hoop / dropper pipes in the review "
+            "reference scene are not generated. Structural rails, stair openings and measured "
+            "shell rings are. --pipes still only enables measured wall pipes."
+        ),
+        "face_budget_exceeded": [],
+        "files": [],
+    }
     all_objects = []
     for tank in spec["tanks"]:
-        objects = _build_tank(tank, segments, mode, material)
+        objects = _build_tank(tank, segments, mode, material, limits, report)
         all_objects.extend(objects)
-        path = output / f"{tank['id']}.fbx"
+        path = output / f"{_group_name(tank)}.fbx"
         _export(path, objects)
         sample = _sample_vertex(objects)
         re_sample, re_names, re_props = _reimport_sample(path, tank["id"])
@@ -55,10 +93,10 @@ def main() -> None:
     links = spec.get("connectors") or []
     if links:
         _reset_scene()
-        material = _white_material()
+        material = _white_material(material_name)
         objects = []
         for conn in links:
-            objects.extend(_build_connector(conn, mode, material))
+            objects.extend(_build_connector(conn, mode, material, limits, report))
         path = output / "connectors.fbx"
         _export(path, objects)
         report["connectors_file"] = str(path)
@@ -66,10 +104,10 @@ def main() -> None:
     extras = spec.get("structures") or []
     if extras:
         _reset_scene()
-        material = _white_material()
+        material = _white_material(material_name)
         objects = []
         for st in extras:
-            objects.extend(_build_structure(st, mode, material))
+            objects.extend(_build_structure(st, mode, material, limits, report))
         path = output / "structures.fbx"
         _export(path, objects)
         report["structures_file"] = str(path)
@@ -77,14 +115,14 @@ def main() -> None:
     if merge and all_objects:
         # Rebuild so per-tank exports (which reimport) cannot disturb the merge.
         _reset_scene()
-        material = _white_material()
+        material = _white_material(material_name)
         merged = []
         for tank in spec["tanks"]:
-            merged.extend(_build_tank(tank, segments, mode, material))
+            merged.extend(_build_tank(tank, segments, mode, material, limits, report))
         for conn in links:
-            merged.extend(_build_connector(conn, mode, material))
+            merged.extend(_build_connector(conn, mode, material, limits, report))
         for st in extras:
-            merged.extend(_build_structure(st, mode, material))
+            merged.extend(_build_structure(st, mode, material, limits, report))
         path = output / "tanks_all.fbx"
         _export(path, merged)
         report["merged"] = str(path)
@@ -123,8 +161,8 @@ def _reset_scene() -> None:
         bpy.data.materials.remove(material)
 
 
-def _white_material():
-    material = bpy.data.materials.new("White")
+def _white_material(name="Standard"):
+    material = bpy.data.materials.new(_latin(name) or "Standard")
     material.use_nodes = True
     principled = material.node_tree.nodes.get("Principled BSDF")
     if principled is not None:
@@ -134,7 +172,7 @@ def _white_material():
     return material
 
 
-def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
+def _build_tank(tank: dict, segments: int, mode: str, material, limits=None, report=None) -> list:
     origin = tank["origin"]
     cx, cy = tank["center_local"]
     z0 = float(tank["z_base"])
@@ -170,33 +208,24 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
                     pieces.append((f"brace_{index + 1:02d}a", *_rod((x0, y0, lo), (x1, y1, hi), 0.05, 8)))
                     pieces.append((f"brace_{index + 1:02d}b", *_rod((x0, y0, hi), (x1, y1, lo), 0.05, 8)))
         pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"]))
-        return _finish(pieces, tank, mode, material, tank["id"], (cx, cy, z0))
+        _append_girders(pieces, cx, cy, radius, tank.get("wind_girders") or [])
+        return _finish(pieces, tank, mode, material, _group_name(tank), (cx, cy, z0), limits, report)
     roof = tank.get("roof_type", "flat")
     rise = float(tank.get("roof_rise") or 0.0)
     # One closed, manifold shell: bottom plate + wall + roof share their rim vertices.
     pieces.append(("body", *_closed_body(cx, cy, z0, z1, radius, roof, rise, segments)))
+    # DOC-01: a measured roof rail is a pipe ring, not a solid parapet.
+    # The ladder rails stay separate rods. A gap is cut only where a stair
+    # was measured (DOC-09); tanks without a stair keep a closed ring.
     handrail = tank.get("handrail_height")
     if handrail:
-        # Lifted 2 cm off the wall top so its bottom does not z-fight with
-        # the roof edge and rim annulus.
-        pieces.append(
-            ("handrail", *_band(cx, cy, z1 + 0.02, float(handrail) - 0.02, radius - 0.06, radius, segments))
-        )
+        _append_handrail(pieces, cx, cy, z1, float(handrail), radius, tank.get("handrail_gaps") or [])
     rim = tank.get("top_rim_width")
     if rim:
         pieces.append(
             ("top_rim", *_annulus(cx, cy, z1, max(radius - 0.05, 0.01), radius + float(rim) * 0.5, segments))
         )
-    for index, girder in enumerate(tank.get("wind_girders") or [], start=1):
-        gz = float(girder["z"])
-        prot = float(girder["protrusion"])
-        height = float(girder.get("height") or 0.15)
-        pieces.append(
-            (
-                f"wind_girder_{index:02d}",
-                *_band(cx, cy, gz - height / 2, height, radius, radius + prot, segments),
-            )
-        )
+    _append_girders(pieces, cx, cy, radius, tank.get("wind_girders") or [])
     ring = tank.get("base_ring")
     if ring:
         prot = float(ring["protrusion"])
@@ -210,14 +239,14 @@ def _build_tank(tank: dict, segments: int, mode: str, material) -> list:
         pieces.append(
             (
                 "stair",
-                *_stair(cx, cy, z0, float(tank["wall_height"]), max(outer - width, radius + 0.05), outer, turns, segments // 2),
+                *_stair(cx, cy, z0, float(tank["wall_height"]), radius + 0.02, max(outer, radius + width), turns, max(8, int(float(tank["wall_height"]) / 0.2))),
             )
         )
     pieces.extend(_part_pieces(tank.get("extra_parts") or [], tank["id"]))
-    return _finish(pieces, tank, mode, material, tank["id"], (cx, cy, z0))
+    return _finish(pieces, tank, mode, material, _group_name(tank), (cx, cy, z0), limits, report)
 
 
-def _finish(pieces, tank: dict, mode: str, material, group: str, anchor) -> list:
+def _finish(pieces, tank: dict, mode: str, material, group: str, anchor, limits=None, report=None) -> list:
     """One parent empty per tank / connector, one mesh object per part.
 
     Pieces with the same part name (wall + roof -> ``body``) are merged. The
@@ -232,28 +261,31 @@ def _finish(pieces, tank: dict, mode: str, material, group: str, anchor) -> list
         base = len(verts_acc)
         verts_acc.extend(verts)
         faces_acc.extend(tuple(i + base for i in face) for face in faces)
-    ax, ay, az = _place([tuple(anchor)], origin, mode)[0]
+    model_origin = (limits or {}).get("model_origin")
+    ax, ay, az = _place([tuple(anchor)], origin, mode, model_origin)[0]
     empty = bpy.data.objects.new(group, None)
     empty.empty_display_type = "PLAIN_AXES"
     empty.location = (ax, ay, az)
     bpy.context.scene.collection.objects.link(empty)
-    _stamp(empty, tank, mode)
+    _stamp(empty, tank, mode, limits)
     empty["part"] = "group"
     objects = [empty]
     for name, (verts, faces) in merged.items():
-        placed = _place(verts, origin, mode)
+        placed = _place(verts, origin, mode, model_origin)
         rel = [(x - ax, y - ay, z - az) for x, y, z in placed]
-        obj = _object(f"{group}_{name}", rel, faces, material)
+        obj = _object(f"{group}_{_latin(name)}", rel, faces, material)
+        _note_faces(obj, faces, (limits or {}).get("max_faces"), report)
         obj.parent = empty
-        _stamp(obj, tank, mode)
+        _stamp(obj, tank, mode, limits)
         obj["part"] = name
         objects.append(obj)
     return objects
 
 
-def _build_connector(conn: dict, mode: str, material) -> list:
+def _build_connector(conn: dict, mode: str, material, limits=None, report=None) -> list:
     """Walkway deck (box), handrails (top + mid rail, posts) and supports; or a pipe."""
-    cid = conn["id"]
+    cid = _group_name(conn)
+    source_id = conn["id"]
     p0 = [float(v) for v in conn["start_local"]]
     p1 = [float(v) for v in conn["end_local"]]
     width = float(conn["width"])
@@ -293,12 +325,12 @@ def _build_connector(conn: dict, mode: str, material) -> list:
                    float(sp.get("length", 0.4)), float(sp.get("width", 0.4)), float(sp.get("axis_deg", 0.0))),
         ))
     meta = {
-        "id": cid, "origin": conn["origin"], "epsg": conn.get("epsg", ""), "radius": 0.0,
+        "id": source_id, "export_name": cid, "origin": conn["origin"], "epsg": conn.get("epsg", ""), "radius": 0.0,
         "wall_height": 0.0, "total_height": 0.0, "roof_type": conn.get("kind", ""), "rms_m": 0.0,
     }
-    objects = _finish(pieces, meta, mode, material, cid, p0)
+    objects = _finish(pieces, meta, mode, material, cid, p0, limits, report)
     for obj in objects:
-        obj["connector_id"] = cid
+        obj["connector_id"] = source_id
         obj["tank_a"] = conn.get("tank_a", "")
         obj["tank_b"] = conn.get("tank_b", "")
     return objects
@@ -314,6 +346,9 @@ def _part_pieces(parts, group: str) -> list:
         name = part["name"]
         rest = name[len(group) + 1:] if name.startswith(group + "_") else name
         kind = part["type"]
+        if _mentions_door(name, kind) and "door" not in rest.lower():
+            rest = f"{rest}_door"
+        rest = _latin(rest)
         if kind == "rod":
             segs = 12 if part["radius"] > 0.1 else 8
             out.append((rest, *_rod(part["p0"], part["p1"], part["radius"], segs)))
@@ -328,6 +363,8 @@ def _part_pieces(parts, group: str) -> list:
         elif kind == "cylinder":
             cx, cy = part["center"]
             out.append((rest, *_cylinder(cx, cy, part["z0"], part["z1"], part["radius"], int(part.get("segments", 96)), caps=True)))
+        elif kind == "tube":
+            out.append((rest, *_tube_mesh(part["points"], part["radius"], int(part.get("segments", 6)), bool(part.get("closed")))))
     return out
 
 
@@ -345,15 +382,16 @@ def _prism(polygon, z0, z1):
     return verts, faces
 
 
-def _build_structure(st: dict, mode: str, material) -> list:
+def _build_structure(st: dict, mode: str, material, limits=None, report=None) -> list:
     """Free-standing structure (Stair_###, PipeRack_###, Pipe_###): one Empty, one object per part."""
-    sid = st["id"]
-    pieces = _part_pieces(st.get("parts") or [], sid)
+    source_id = st["id"]
+    sid = _group_name(st)
+    pieces = _part_pieces(st.get("parts") or [], source_id)
     meta = {
-        "id": sid, "origin": st["origin"], "epsg": st.get("epsg", ""), "radius": 0.0,
+        "id": source_id, "export_name": sid, "origin": st["origin"], "epsg": st.get("epsg", ""), "radius": 0.0,
         "wall_height": 0.0, "total_height": 0.0, "roof_type": st.get("kind", ""), "rms_m": 0.0,
     }
-    objects = _finish(pieces, meta, mode, material, sid, st["anchor_local"])
+    objects = _finish(pieces, meta, mode, material, sid, st["anchor_local"], limits, report)
     for obj in objects:
         obj["structure_id"] = sid
         obj["structure_kind"] = st.get("kind", "")
@@ -426,11 +464,16 @@ def _vbox(x, y, z0, z1, length, width, axis_deg):
     return _box8(corners)
 
 
-def _place(verts, origin, mode: str):
-    if mode != "absolute":
+def _place(verts, origin, mode: str, model_origin=None):
+    if mode == "absolute":
+        ox, oy, oz = origin
+        return [(x + ox, y + oy, z + oz) for x, y, z in verts]
+    if not model_origin:
         return verts
-    ox, oy, oz = origin
-    return [(x + ox, y + oy, z + oz) for x, y, z in verts]
+    dx = float(origin[0]) - float(model_origin[0])
+    dy = float(origin[1]) - float(model_origin[1])
+    dz = float(origin[2]) - float(model_origin[2])
+    return [(x + dx, y + dy, z + dz) for x, y, z in verts]
 
 
 _FLAT_PIECES = ("_foundation", "_handrail", "_wind_girder_", "_base_ring", "_top_rim", "_stair", "_deck", "_support_", "_brace", "_rail",
@@ -453,7 +496,7 @@ def _object(name, verts, faces, material):
     return obj
 
 
-def _stamp(obj, tank: dict, mode: str) -> None:
+def _stamp(obj, tank: dict, mode: str, limits=None) -> None:
     origin = tank["origin"]
     obj["epsg"] = str(tank.get("epsg", ""))
     obj["srs_origin_x"] = f"{float(origin[0]):.6f}"
@@ -461,6 +504,13 @@ def _stamp(obj, tank: dict, mode: str) -> None:
     obj["srs_origin_z"] = f"{float(origin[2]):.6f}"
     obj["coordinate_mode"] = mode
     obj["tank_id"] = tank["id"]
+    obj["export_name"] = str(tank.get("export_name") or tank["id"])
+    agreed = (limits or {}).get("model_origin")
+    if agreed:
+        obj["model_origin_x"] = f"{float(agreed[0]):.6f}"
+        obj["model_origin_y"] = f"{float(agreed[1]):.6f}"
+        obj["model_origin_z"] = f"{float(agreed[2]):.6f}"
+    obj["vertical_datum"] = "" if tank.get("vertical_datum") in (None, "") else str(tank["vertical_datum"])
     obj["radius_m"] = f"{float(tank['radius']):.6f}"
     obj["wall_height_m"] = f"{float(tank['wall_height']):.6f}"
     obj["total_height_m"] = f"{float(tank['total_height']):.6f}"
@@ -522,6 +572,184 @@ def _reimport_sample(path: Path, tank_id: str):
     for obj in new:
         bpy.data.objects.remove(obj, do_unlink=True)
     return sample, names, props
+
+
+def _latin(text: str) -> str:
+    raw = str(text).replace("门", "door")
+    chars = []
+    for ch in raw:
+        if ch.isascii() and (ch.isalnum() or ch in "_-"):
+            chars.append(ch)
+        else:
+            chars.append("_")
+    token = "".join(chars).strip("_")
+    while "__" in token:
+        token = token.replace("__", "_")
+    return token or "part"
+
+
+def _mentions_door(name: str, kind: str = "") -> bool:
+    blob = f"{name} {kind}"
+    return "门" in blob or "door" in blob.lower()
+
+
+def _group_name(record: dict) -> str:
+    return _latin(record.get("export_name") or record.get("id") or "part")
+
+
+def _note_faces(obj, faces, limit, report) -> None:
+    polygons = 0
+    triangles = 0
+    for face in faces:
+        size = len(face)
+        if size < 3:
+            continue
+        polygons += 1
+        triangles += size - 2
+    obj["polygon_count"] = polygons
+    obj["triangle_count"] = triangles
+    if limit and polygons > int(limit):
+        obj["face_budget_exceeded"] = 1
+        if report is not None:
+            report.setdefault("face_budget_exceeded", []).append(
+                {"object": obj.name, "polygons": polygons, "triangles": triangles, "limit": int(limit), "kept": True}
+            )
+
+
+def _append_handrail(pieces, cx, cy, z_deck, height, radius, gaps) -> None:
+    """Pipe ring (top, mid, posts) around a measured roof rail. No solid wall."""
+    pipe_r = 0.025
+    ring_r = max(radius - 0.08, 0.2)
+    openings = []
+    for gap in gaps or []:
+        width = max(float(gap.get("width_m") or 0.8), 0.6)
+        half = math.degrees(width / (2.0 * max(ring_r, 0.2)))
+        openings.append((float(gap["azimuth_deg"]) % 360.0, half))
+    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height, ring_r, pipe_r, openings)))
+    pieces.append(("handrail", *_ring_pipe(cx, cy, z_deck + height * 0.5, ring_r, pipe_r * 0.8, openings)))
+    circ = 2.0 * math.pi * ring_r
+    count = max(4, int(circ / 1.5))
+    for index in range(count):
+        deg = 360.0 * index / count
+        if any(_angle_delta(deg, center) <= half for center, half in openings):
+            continue
+        ang = math.radians(deg)
+        x = cx + ring_r * math.cos(ang)
+        y = cy + ring_r * math.sin(ang)
+        pieces.append(("handrail", *_rod((x, y, z_deck), (x, y, z_deck + height), pipe_r, 6)))
+
+
+def _append_girders(pieces, cx, cy, radius, girders) -> None:
+    """Measured shell rings as pipes. The protrusion is the measured stick-out, not a plate."""
+    for index, girder in enumerate(girders or [], start=1):
+        prot = max(float(girder.get("protrusion") or 0.08), 0.04)
+        pipe_r = prot / 2.0
+        pieces.append((
+            f"wind_girder_{index:02d}",
+            *_ring_pipe(cx, cy, float(girder["z"]), radius + pipe_r, pipe_r, []),
+        ))
+
+
+def _angle_delta(a, b) -> float:
+    return abs(((a - b + 180.0) % 360.0) - 180.0)
+
+
+def _ring_pipe(cx, cy, z, ring_r, pipe_r, openings, circ=16, radial=6):
+    """Torus-like pipe. ``openings`` are (center_deg, half_width_deg) gaps."""
+    def point(index):
+        ang = 2 * math.pi * index / circ
+        return (cx + ring_r * math.cos(ang), cy + ring_r * math.sin(ang), z)
+
+    def blocked(index):
+        deg = (360.0 * index / circ) % 360.0
+        return any(_angle_delta(deg, center) <= half for center, half in openings)
+
+    if not openings or not any(blocked(i) for i in range(circ)):
+        return _tube_mesh([point(i) for i in range(circ)], pipe_r, radial, True)
+    runs = []
+    current = []
+    for index in range(circ):
+        if blocked(index):
+            if len(current) >= 2:
+                runs.append(current)
+            current = []
+        else:
+            current.append(point(index))
+    if len(current) >= 2:
+        if runs and not blocked(0):
+            runs[0] = current + runs[0]
+        else:
+            runs.append(current)
+    verts, faces = [], []
+    for run in runs:
+        v, f = _tube_mesh(run, pipe_r, radial, False)
+        base = len(verts)
+        verts.extend(v)
+        faces.extend(tuple(i + base for i in face) for face in f)
+    return verts, faces
+
+
+def _tube_mesh(points, radius, segs, closed=False):
+    pts = [tuple(float(v) for v in p) for p in points]
+    if len(pts) < 2:
+        return [], []
+    rings = []
+    verts = []
+    previous = None
+    samples = pts
+    for index, point in enumerate(samples):
+        if index == 0:
+            direction = _sub(samples[1], samples[0])
+        elif index == len(samples) - 1:
+            direction = _sub(samples[-1], samples[-2])
+        else:
+            direction = _sub(samples[index + 1], samples[index - 1])
+        _axis, e1, e2, previous = _frame_along(direction, previous)
+        ring = []
+        for k in range(segs):
+            ang = 2 * math.pi * k / segs
+            offset = [math.cos(ang) * radius * e1[i] + math.sin(ang) * radius * e2[i] for i in range(3)]
+            ring.append(len(verts))
+            verts.append(tuple(point[i] + offset[i] for i in range(3)))
+        rings.append(ring)
+    faces = []
+    pairs = list(zip(rings, rings[1:]))
+    if closed and len(rings) > 2:
+        pairs.append((rings[-1], rings[0]))
+    for a, b in pairs:
+        for k in range(segs):
+            nxt = (k + 1) % segs
+            faces.append((a[k], a[nxt], b[nxt], b[k]))
+    if not closed:
+        faces.append(tuple(reversed(rings[0])))
+        faces.append(tuple(rings[-1]))
+    return verts, faces
+
+
+def _sub(a, b):
+    return [a[i] - b[i] for i in range(3)]
+
+
+def _frame_along(direction, previous):
+    length = math.sqrt(sum(c * c for c in direction)) or 1.0
+    axis = [c / length for c in direction]
+    if previous is None:
+        ref = (0.0, 0.0, 1.0) if abs(axis[2]) < 0.9 else (1.0, 0.0, 0.0)
+        e1 = [
+            axis[1] * ref[2] - axis[2] * ref[1],
+            axis[2] * ref[0] - axis[0] * ref[2],
+            axis[0] * ref[1] - axis[1] * ref[0],
+        ]
+    else:
+        e1 = [previous[i] - axis[i] * sum(previous[j] * axis[j] for j in range(3)) for i in range(3)]
+    n1 = math.sqrt(sum(c * c for c in e1)) or 1.0
+    e1 = [c / n1 for c in e1]
+    e2 = [
+        axis[1] * e1[2] - axis[2] * e1[1],
+        axis[2] * e1[0] - axis[0] * e1[2],
+        axis[0] * e1[1] - axis[1] * e1[0],
+    ]
+    return axis, e1, e2, e1
 
 
 def _cylinder(cx, cy, z0, z1, radius, segs, caps=False):
