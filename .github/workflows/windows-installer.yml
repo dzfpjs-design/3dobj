@@ -1,0 +1,70 @@
+name: Windows installer
+
+on:
+  push:
+    branches:
+      - cursor/tank-osgb-extract-304d
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install "pyinstaller>=6.3,<7" pytest
+
+      - name: Unit tests
+        run: python -m pytest tests -q --tb=line
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Cache portable Blender
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/blender-4.2.14-windows-x64.zip
+          key: blender-4.2.14-windows-x64
+
+      - name: Build installer
+        run: powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+
+      - name: Smoke test installed program
+        timeout-minutes: 40
+        run: powershell -ExecutionPolicy Bypass -File packaging\windows\smoke.ps1
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TankExtract-Setup
+          path: dist/installer/TankExtract-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Publish pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tankextract-v1.3.7
+          name: TankExtract 1.3.7 Windows
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            Windows 10/11 x64 安装包 1.3.7，仍是候选，不是验收版。不覆盖 1.0.0–1.3.6。
+            桥端默认用罐壁外实测桥面；与整跨直线差超过 25 cm 的局部带不采用。
+            贴到屋面必须显式 --junction-rule seat_to_measured_roof，不手填已有标高，默认关闭。
+            不补未测栏杆和桥柱。圆管仍是 8/12 边。栏杆立柱去掉埋在接头里的端盖，断面仍是圆的。
+            FBX 仍是 Phong/Lambert。3ds Max 脚本未在 Max 中运行。
+          files: dist/installer/TankExtract-Setup-*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
