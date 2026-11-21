@@ -805,47 +805,55 @@ def _angle_delta(a, b) -> float:
 
 
 def _ring_pipe(cx, cy, z, ring_r, pipe_r, openings, circ=16, radial=6):
-    """Torus-like pipe. ``openings`` are (center_deg, half_width_deg) gaps."""
-    def point(index):
-        ang = 2 * math.pi * index / circ
+    """Torus-like pipe. ``openings`` are (center_deg, half_width_deg) gaps.
+
+    The gap is the measured angle, not one coarse station. Edge points are
+    inserted on the opening boundary and only stations that fall inside it
+    are left out.
+    """
+    def at(deg):
+        ang = math.radians(deg)
         return (cx + ring_r * math.cos(ang), cy + ring_r * math.sin(ang), z)
 
-    # A 12-station ring is coarser than a stair width. Still drop the nearest
-    # station so a measured opening is visible, and drop any station the
-    # opening actually covers.
-    forced = set()
-    for center, half in openings:
-        nearest = min(range(circ), key=lambda index: _angle_delta((360.0 * index / circ) % 360.0, center))
-        forced.add(nearest)
+    def inside(deg):
+        return any(_angle_delta(deg, center) < half - 0.05 for center, half in openings)
 
-    def blocked(index):
-        if index in forced:
-            return True
-        deg = (360.0 * index / circ) % 360.0
-        return any(_angle_delta(deg, center) <= half for center, half in openings)
-
-    if not openings or not any(blocked(i) for i in range(circ)):
-        return _tube_mesh([point(i) for i in range(circ)], pipe_r, radial, True)
+    degrees = [360.0 * index / circ for index in range(circ) if not inside(360.0 * index / circ)]
+    for center, half in openings or []:
+        degrees.append((center - half) % 360.0)
+        degrees.append((center + half) % 360.0)
+    degrees = sorted({round(deg, 4) for deg in degrees})
+    if not openings or len(degrees) < 3:
+        return _tube_mesh([at(360.0 * index / circ) for index in range(circ)], pipe_r, radial, True)
+    pairs = []
+    count = len(degrees)
+    for index, start in enumerate(degrees):
+        end = degrees[(index + 1) % count]
+        delta = (end - start) % 360.0
+        mid = (start + delta / 2.0) % 360.0
+        pairs.append((start, end, inside(mid)))
+    if any(gap for _a, _b, gap in pairs):
+        cut = next(index for index, item in enumerate(pairs) if item[2])
+        pairs = pairs[cut:] + pairs[:cut]
     runs = []
     current = []
-    for index in range(circ):
-        if blocked(index):
+    for start, end, gap in pairs:
+        if gap:
             if len(current) >= 2:
                 runs.append(current)
             current = []
-        else:
-            current.append(point(index))
+            continue
+        if not current:
+            current = [at(start)]
+        current.append(at(end))
     if len(current) >= 2:
-        if runs and not blocked(0):
-            runs[0] = current + runs[0]
-        else:
-            runs.append(current)
+        runs.append(current)
     verts, faces = [], []
     for run in runs:
         v, f = _tube_mesh(run, pipe_r, radial, False)
         base = len(verts)
         verts.extend(v)
-        faces.extend(tuple(i + base for i in face) for face in f)
+        faces.extend(tuple(index + base for index in face) for face in f)
     return verts, faces
 
 

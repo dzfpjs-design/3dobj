@@ -121,7 +121,11 @@ def handrail_gaps(tank) -> list[dict]:
         })
     roof = accessories.get("roof") or {}
     for azimuth in roof.get("open_azimuths") or []:
-        gaps.append({"azimuth_deg": float(azimuth) % 360.0, "width_m": 1.0})
+        deg = float(azimuth) % 360.0
+        # A measured stair already opens this arrival. Do not widen it to 1 m.
+        if any(abs(((deg - gap["azimuth_deg"] + 180.0) % 360.0) - 180.0) < 12.0 for gap in gaps):
+            continue
+        gaps.append({"azimuth_deg": deg, "width_m": 1.0})
     return gaps
 
 
@@ -170,10 +174,23 @@ def _junctions(conn, by_name) -> list[dict]:
         if platform:
             radius = float(platform["radius"])
             level = platform.get("z")
-            on_disk = dist <= radius + 0.15
-            at_level = level is None or abs(z - float(level)) <= 0.40
-            row["platform"] = "meets_platform" if on_disk and at_level else "misses_platform"
+            outside = max(0.0, dist - radius)
+            dz = None if level is None else z - float(level)
+            # A walkable joint is the end on the platform disk and on its
+            # measured walking surface. Being inside the tank shell is not enough.
+            meets = outside <= 0.30 and dz is not None and abs(dz) <= 0.15
+            row["platform"] = "meets_platform" if meets else "misses_platform"
             row["platform_radius_m"] = round(radius, 3)
+            row["platform_z_m"] = None if level is None else round(float(level), 3)
+            row["deck_z_m"] = round(z, 3)
+            row["dz_m"] = None if dz is None else round(dz, 3)
+            row["radial_outside_m"] = round(outside, 3)
+            row["junction_gap_m"] = None if dz is None else round(math.hypot(outside, dz), 3)
+            before = getattr(conn, "z0_before_platform" if end == "a" else "z1_before_platform", None)
+            if before is not None:
+                row["deck_z_before_m"] = round(float(before), 3)
+                row["seat_dz_m"] = round(z - float(before), 3)
+            row["confidence"] = "measured" if meets else "measured_miss"
         rows.append(row)
     return rows
 
@@ -188,17 +205,30 @@ def _move_end(conn, tank, end: str, platform: dict) -> None:
     vx, vy = x - tank.center_x, y - tank.center_y
     dist = math.hypot(vx, vy)
     radius = float(platform["radius"])
-    if dist < 1e-6 or dist <= radius + 0.05:
+    level = platform.get("z")
+    if dist > radius + 0.05 and dist > 1e-6:
+        nx = tank.center_x + vx / dist * radius
+        ny = tank.center_y + vy / dist * radius
+        if math.hypot(nx - other[0], ny - other[1]) >= 0.4:
+            nz = float(level if level is not None else (conn.z0 if end == "a" else conn.z1))
+            if end == "a":
+                conn.x0, conn.y0, conn.z0 = nx, ny, nz
+            else:
+                conn.x1, conn.y1, conn.z1 = nx, ny, nz
+            return
+    # Already on the disk: use the measured walking surface when it is close
+    # to the deck. A larger step is left as a recorded miss, not filled in.
+    if level is None or dist > radius + 0.30:
         return
-    nx = tank.center_x + vx / dist * radius
-    ny = tank.center_y + vy / dist * radius
-    if math.hypot(nx - other[0], ny - other[1]) < 0.4:
+    current = conn.z0 if end == "a" else conn.z1
+    if abs(current - float(level)) > 0.25:
         return
-    nz = float(platform.get("z", conn.z0 if end == "a" else conn.z1))
     if end == "a":
-        conn.x0, conn.y0, conn.z0 = nx, ny, nz
+        conn.z0_before_platform = current
+        conn.z0 = float(level)
     else:
-        conn.x1, conn.y1, conn.z1 = nx, ny, nz
+        conn.z1_before_platform = current
+        conn.z1 = float(level)
 
 
 # Lowest shell division. Below this the wall stops reading as a cylinder.

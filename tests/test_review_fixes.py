@@ -253,15 +253,31 @@ def test_sphere_search_accepts_a_low_cylinder_fit_and_rejects_a_dome_cap():
     assert abs(section["diameter"] - 0.44) > 0.1
     plate = _round_section(rng.uniform(0.05, 0.50, 800), rng.uniform(9.92, 10.08, 800))
     assert plate is None
+    from tankextract.detect import _dense_core
+
+    core_ang = rng.random(600) * 2 * np.pi
+    core = _dense_core(0.55 + 0.07 * np.cos(core_ang), 10.0 + 0.07 * np.sin(core_ang))
+    assert core and abs(core["diameter"] - 0.14) < 0.08
+    assert _dense_core(rng.uniform(0.05, 0.55, 800), rng.uniform(9.92, 10.08, 800)) is None
 
 
-def test_a_narrow_measured_opening_removes_one_station_on_a_coarse_ring():
+def test_opening_width_follows_the_measurement_on_a_coarse_ring():
     mesh = _module()
-    half = math.degrees(0.8 / (2.0 * 8.5))
-    verts, _faces = mesh._ring_pipe(0, 0, 1.0, 8.5, 0.03, [(10.0, half)], circ=12)
-    angles = [math.degrees(math.atan2(v[1], v[0])) % 360.0 for v in verts]
-    assert verts
-    assert all(abs(((angle - 10.0 + 180.0) % 360.0) - 180.0) > 8.0 for angle in angles)
+    ring_r = 8.5
+    width = 0.80
+    half = math.degrees(width / (2.0 * ring_r))
+    verts, _faces = mesh._ring_pipe(0, 0, 1.0, ring_r, 0.03, [(10.0, half)], circ=12)
+    angles = [
+        math.degrees(math.atan2(v[1], v[0])) % 360.0
+        for v in verts
+        if abs(math.hypot(v[0], v[1]) - ring_r) < 0.05
+    ]
+    assert angles
+    assert all(abs(((angle - 10.0 + 180.0) % 360.0) - 180.0) >= half - 0.6 for angle in angles)
+    edges = sorted(abs(((angle - 10.0 + 180.0) % 360.0) - 180.0) for angle in angles)
+    assert edges[0] < half + 0.6
+    arc = ring_r * math.radians(2.0 * half)
+    assert abs(arc - width) < 0.05
 
 
 def test_girder_pipe_uses_the_fitted_diameter_only():

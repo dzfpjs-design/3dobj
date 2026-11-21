@@ -1346,12 +1346,55 @@ def _wind_girders(outer_pts, center, radius, z_base, z_top) -> list[dict]:
     # the whole cluster around the merged height.
     for record in merged:
         sel = np.abs(z - record["z"]) < 0.40
-        section = _round_section(rho[sel] - radius, z[sel])
-        if section:
-            record["diameter"] = section["diameter"]
-            record["center_rho"] = section["center_rho"]
-            record["section_fit_m"] = section["fit_m"]
+        core = _dense_core(rho[sel] - radius, z[sel])
+        blob = _round_section(rho[sel] - radius, z[sel])
+        if blob:
+            record["blob_diameter"] = blob["diameter"]
+        if core:
+            record["diameter"] = core["diameter"]
+            record["center_rho"] = core["center_rho"]
+            record["section_fit_m"] = core["fit_m"]
+            record["diameter_confidence"] = "dense_core"
+        elif blob:
+            record["diameter_confidence"] = "blob_not_used"
     return merged
+
+
+def _dense_core(rho_off, z) -> dict | None:
+    """Compact high-density cluster in the cross-section.
+
+    A circle fitted to the whole photogrammetry cloud follows brackets and
+    thickened skin. Only a cluster that is dense in both directions is used
+    as a pipe size, and it is an estimate of that cluster, not a surveyed OD.
+    """
+    if len(rho_off) < 40:
+        return None
+    x = np.asarray(rho_off, dtype=float)
+    y = np.asarray(z, dtype=float)
+    hist, x_edges, y_edges = np.histogram2d(x, y, bins=(16, 12))
+    peak = float(hist.max())
+    if peak < 8:
+        return None
+    keep = hist >= 0.45 * peak
+    if int(keep.sum()) < 2:
+        return None
+    xs = np.flatnonzero(keep.any(axis=1))
+    ys = np.flatnonzero(keep.any(axis=0))
+    dx = float(x_edges[xs[-1] + 1] - x_edges[xs[0]])
+    dy = float(y_edges[ys[-1] + 1] - y_edges[ys[0]])
+    if min(dx, dy) < 0.06 or max(dx, dy) > 0.35 or max(dx, dy) > 2.2 * min(dx, dy):
+        return None
+    weights = hist[xs[0]:xs[-1] + 1, ys[0]:ys[-1] + 1]
+    x_cent = 0.5 * (x_edges[xs[0]:xs[-1] + 1] + x_edges[xs[0] + 1:xs[-1] + 2])
+    y_cent = 0.5 * (y_edges[ys[0]:ys[-1] + 1] + y_edges[ys[0] + 1:ys[-1] + 2])
+    mass = float(weights.sum())
+    if mass <= 0:
+        return None
+    return {
+        "diameter": float((dx + dy) / 2.0),
+        "center_rho": float((weights.sum(axis=1) * x_cent).sum() / mass),
+        "fit_m": float(abs(dx - dy)),
+    }
 
 
 def _round_section(rho_off, z) -> dict | None:

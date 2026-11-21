@@ -928,7 +928,11 @@ def roof_platform(F: np.ndarray, tank, connectors_az=()) -> dict | None:
                 best = (rp_try, trial, trial_on)
         if best is None:
             return None
-        rp, zp, on = best
+        rp, _trial, on = best
+        # The widest low bin is often the soffit. The walking surface is the
+        # median of the upward faces on that rim, below the rail.
+        rim = (np.abs(d - rp) < 0.40) & (F[:, 5] > 0.85) & (F[:, 2] > crown - 0.30) & (F[:, 2] < crown + 0.55)
+        zp = float(np.median(F[rim, 2])) if rim.sum() >= 20 else _trial
         surf = None
     else:
         surf = roof_surface(F, tank)

@@ -613,6 +613,8 @@ def _spec(tanks: list[Tank], options: RunOptions, connectors=None, structures=No
                         "height": item.get("height", 0.15),
                         "diameter": item.get("diameter"),
                         "center_rho": item.get("center_rho"),
+                        "diameter_confidence": item.get("diameter_confidence"),
+                        "blob_diameter": item.get("blob_diameter"),
                     }
                     for item in tank.wind_girders
                 ],
