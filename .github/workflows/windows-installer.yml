@@ -55,15 +55,15 @@ jobs:
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tankextract-v1.3.7
-          name: TankExtract 1.3.7 Windows
+          tag_name: tankextract-v1.3.8
+          name: TankExtract 1.3.8 Windows
           prerelease: true
           generate_release_notes: false
           body: |
-            Windows 10/11 x64 安装包 1.3.7，仍是候选，不是验收版。不覆盖 1.0.0–1.3.6。
-            桥端默认用罐壁外实测桥面；与整跨直线差超过 25 cm 的局部带不采用。
-            贴到屋面必须显式 --junction-rule seat_to_measured_roof，不手填已有标高，默认关闭。
-            不补未测栏杆和桥柱。圆管仍是 8/12 边。栏杆立柱去掉埋在接头里的端盖，断面仍是圆的。
+            Windows 10/11 x64 安装包 1.3.8，仍是候选，不是验收版。不覆盖 1.0.0–1.3.7。
+            默认桥端规则仍是 none。只有校正文件或 --junction-rule 才会把端点放到实测屋面。
+            校正会保留校正前桥面高程，并标明不是源网格原值。
+            不补未测栏杆和桥柱。圆管仍是 8/12 边。
             FBX 仍是 Phong/Lambert。3ds Max 脚本未在 Max 中运行。
           files: dist/installer/TankExtract-Setup-*.exe
         env:

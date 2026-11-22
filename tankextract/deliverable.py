@@ -201,13 +201,6 @@ def _junctions(conn, by_name) -> list[dict]:
                 row["dz_measured_m"] = round(dz, 3)
                 row["dz_m"] = round(dz, 3)
                 row["confidence"] = "measured_roof_profile"
-                # The number is the gap. It is not a pass/fail cut, and it does not add a platform.
-                if abs(dz) <= 0.15:
-                    row["relation"] = "deck_on_measured_roof"
-                elif dz > 0:
-                    row["relation"] = "deck_above_measured_roof"
-                else:
-                    row["relation"] = "deck_below_measured_roof"
                 fit = (getattr(conn, "end_fit", None) or {}).get(end) or {}
                 kind = classify_end_fit(fit.get("line_z"), fit.get("local_z"), measured)
                 row["deck_z_line_m"] = fit.get("line_z")
@@ -216,10 +209,29 @@ def _junctions(conn, by_name) -> list[dict]:
                 row["fit_class"] = kind
                 row["dz_line_m"] = None if fit.get("line_z") is None else round(float(fit["line_z"]) - measured, 3)
                 row["dz_local_m"] = None if fit.get("local_z") is None else round(float(fit["local_z"]) - measured, 3)
-                # Not applied. A caller can opt in with --junction-rule seat_to_measured_roof.
                 source = (getattr(conn, "end_sources", None) or {}).get(end, "measured")
-                row["seat_rule"] = source if str(source).startswith("rule") else "off"
+                seated = "seat_to_measured_roof" in str(source)
+                row["seat_rule"] = source if seated else "off"
                 row["seat_target_z_m"] = round(measured, 3)
+                before = getattr(conn, "z0_before_rule" if end == "a" else "z1_before_rule", None)
+                if before is not None:
+                    row["deck_z_before_rule_m"] = round(float(before), 3)
+                    row["dz_before_rule_m"] = round(float(before) - measured, 3)
+                    row["correction_dz_m"] = round(z - float(before), 3)
+                # A seated end is a correction. It is not the deck the mesh measured.
+                if seated:
+                    row["relation"] = "manual_seated_on_measured_roof"
+                    row["source_mesh"] = False
+                    row["correction_note"] = "人工校正把端点放到实测屋面板。校正前桥面高程仍是网格测量。"
+                elif abs(dz) <= 0.15:
+                    row["relation"] = "deck_on_measured_roof"
+                    row["source_mesh"] = True
+                elif dz > 0:
+                    row["relation"] = "deck_above_measured_roof"
+                    row["source_mesh"] = True
+                else:
+                    row["relation"] = "deck_below_measured_roof"
+                    row["source_mesh"] = True
             row["platform"] = "not_measured"
         if platform:
             radius = float(platform["radius"])

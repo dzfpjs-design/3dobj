@@ -524,6 +524,45 @@ def test_local_deck_is_kept_apart_from_the_straight_line_and_the_roof():
     assert conn.end_sources["a"] == "rule:seat_to_measured_roof"
 
 
+def test_manual_roof_seat_keeps_the_measured_deck():
+    from tankextract.corrections import apply_corrections
+    from tankextract.deliverable import _junctions
+
+    tank = _Tank("Tank_001", 0, 0, 3.0)
+    tank.z_base = 50.0
+    tank.wall_height = 10.0
+    tank.total_height = 12.0
+    tank.roof_type = "cone"
+    tank.roof_profile_z = [62.1] * 10
+    other = _Tank("Tank_002", 20, 0, 3.0)
+    other.z_base = 50.0
+    other.wall_height = 10.0
+    other.total_height = 12.0
+    other.roof_type = "cone"
+    other.roof_profile_z = [62.1] * 10
+    conn = _Conn()
+    conn.name = "Connector_001"
+    conn.end_sources = {}
+    conn.end_fit = {"a": {"line_z": 62.65, "local_z": 62.60, "used": "local"}, "b": {}}
+    conn.x0, conn.y0, conn.z0 = 3.0, 0.0, 62.60
+    conn.x1, conn.y1, conn.z1 = 17.0, 0.0, 62.60
+    apply_corrections([tank, other], [conn], {
+        "connectors": {"Connector_001": {"source": "manual", "ends": {"a": {"rule": "seat_to_measured_roof"}}}},
+    }, log=lambda *_a, **_k: None)
+    assert conn.x0 == 3.0 and conn.y0 == 0.0
+    assert abs(conn.z0 - 62.1) < 0.05
+    assert conn.z0_before_rule == 62.60
+    assert conn.z1 == 62.60
+    ends = {row["end"]: row for row in _junctions(conn, {"Tank_001": tank, "Tank_002": other})}
+    assert ends["a"]["relation"] == "manual_seated_on_measured_roof"
+    assert ends["a"]["source_mesh"] is False
+    assert ends["a"]["deck_z_before_rule_m"] == 62.60
+    assert abs(ends["a"]["dz_before_rule_m"] - 0.5) < 0.05
+    assert ends["a"]["seat_rule"] == "manual:seat_to_measured_roof"
+    assert ends["b"]["seat_rule"] == "off"
+    assert ends["b"]["source_mesh"] is True
+
+
 def test_kept_detail_on_tank_031_already_exceeds_2000():
     from tankextract.deliverable import detail_floor
 
