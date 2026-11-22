@@ -196,12 +196,16 @@ def _junctions(conn, by_name) -> list[dict]:
                 row["dz_m"] = round(dz_formula, 3)
                 row["relation"] = "formula_only"
             else:
-                dz = z - measured
-                row["roof_z_measured_m"] = round(measured, 3)
+                row["roof_z_profile_m"] = round(measured, 3)
+                fit = (getattr(conn, "end_fit", None) or {}).get(end) or {}
+                landing = fit.get("landing_roof_z")
+                compared = float(landing) if landing is not None else measured
+                dz = z - compared
+                row["roof_z_measured_m"] = round(compared, 3)
+                row["dz_profile_m"] = round(z - measured, 3)
                 row["dz_measured_m"] = round(dz, 3)
                 row["dz_m"] = round(dz, 3)
-                row["confidence"] = "measured_roof_profile"
-                fit = (getattr(conn, "end_fit", None) or {}).get(end) or {}
+                row["confidence"] = "landing_sector" if landing is not None else "measured_roof_profile"
                 kind = classify_end_fit(fit.get("line_z"), fit.get("local_z"), measured)
                 row["deck_z_line_m"] = fit.get("line_z")
                 row["deck_z_local_m"] = fit.get("local_z")
@@ -209,17 +213,33 @@ def _junctions(conn, by_name) -> list[dict]:
                 row["fit_class"] = kind
                 row["dz_line_m"] = None if fit.get("line_z") is None else round(float(fit["line_z"]) - measured, 3)
                 row["dz_local_m"] = None if fit.get("local_z") is None else round(float(fit["local_z"]) - measured, 3)
+                row["ramp_z_m"] = fit.get("ramp_z")
+                row["landing_roof_z_m"] = fit.get("landing_roof_z")
+                row["landing_band"] = fit.get("landing_band")
                 source = (getattr(conn, "end_sources", None) or {}).get(end, "measured")
                 seated = "seat_to_measured_roof" in str(source)
-                row["seat_rule"] = source if seated else "off"
-                row["seat_target_z_m"] = round(measured, 3)
+                conflict = getattr(conn, "seat_conflict", None) or {}
+                row["seat_rule"] = source if source not in ("", "measured") else "off"
+                row["seat_target_z_m"] = fit.get("landing_roof_z") if fit.get("landing_roof_z") is not None else round(measured, 3)
+                row["constraint_conflict"] = bool(conflict) and "conflict" in str(source)
+                if conflict:
+                    row["slope_measured_deg"] = conflict.get("slope_before_deg")
+                    row["slope_if_seated_deg"] = conflict.get("slope_if_seated_deg")
+                    row["seat_preview_z_m"] = conflict.get("preview_z0") if end == "a" else conflict.get("preview_z1")
                 before = getattr(conn, "z0_before_rule" if end == "a" else "z1_before_rule", None)
                 if before is not None:
                     row["deck_z_before_rule_m"] = round(float(before), 3)
                     row["dz_before_rule_m"] = round(float(before) - measured, 3)
                     row["correction_dz_m"] = round(z - float(before), 3)
-                # A seated end is a correction. It is not the deck the mesh measured.
-                if seated:
+                if row["constraint_conflict"]:
+                    row["relation"] = "seat_conflict"
+                    row["source_mesh"] = True
+                    row["correction_note"] = conflict.get("reason") or "贴屋面与实测桥坡冲突，桥面未改。"
+                elif "already_on_landing" in str(source):
+                    row["correction_note"] = "已请求贴桥头屋面。该处屋面与实测桥面相差不超过 15 cm，桥面未改。"
+                    row["relation"] = "deck_on_measured_roof"
+                    row["source_mesh"] = True
+                elif seated:
                     row["relation"] = "manual_seated_on_measured_roof"
                     row["source_mesh"] = False
                     row["correction_note"] = "人工校正把端点放到实测屋面板。校正前桥面高程仍是网格测量。"
@@ -255,6 +275,19 @@ def _junctions(conn, by_name) -> list[dict]:
             row["confidence"] = "measured" if meets else "measured_miss"
         rows.append(row)
     return rows
+
+
+def seat_slope_conflict(x0, y0, z0, x1, y1, z1, prop0, prop1, limit_deg: float = 4.0):
+    """True when seating the ends would bend the measured ramp by more than ``limit_deg``.
+
+    The returned slopes are degrees. A conflict is not a completed joint.
+    """
+    run = math.hypot(x1 - x0, y1 - y0)
+    if run < 0.5:
+        return False, 0.0, 0.0
+    before = math.degrees(math.atan2(z1 - z0, run))
+    after = math.degrees(math.atan2(prop1 - prop0, run))
+    return abs(after - before) > limit_deg, before, after
 
 
 def apply_junction_rule(tanks, connectors, rule: str | None) -> int:

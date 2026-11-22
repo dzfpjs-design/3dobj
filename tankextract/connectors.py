@@ -17,6 +17,7 @@ A narrow deck without railing is reported as a pipe (diameter = width).
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 
 import numpy as np
 
@@ -40,7 +41,8 @@ class Connector:
     supports: list[dict] = field(default_factory=list)  # x, y, z_bottom, z_top, size
     end_stops: dict = field(default_factory=dict)  # why each end stopped: roof plate, faces ended, ...
     end_sources: dict = field(default_factory=dict)  # measured, rule, or manual / assumed
-    end_fit: dict = field(default_factory=dict)  # line_z vs local deck faces; the model uses local when it exists
+    end_fit: dict = field(default_factory=dict)  # line, ramp, local deck, landing roof
+    seat_conflict: dict | None = None  # set when a requested roof seat would change the measured slope
     handrail_height_measured: float | None = None
     block: str = ""
     srs: str = ""
@@ -165,14 +167,17 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
         if best is None or count > best[0] or (count == best[0] and abs(slope) < abs(best[1])):
             best = (count, slope, key * 0.1)
     _count, slope, level = best
-    st, zs = [], []
+    st, zs, dense = [], [], []
     for sc, zz in stations:
         line = level + slope * (sc - s_ref)
         hit = zz[np.abs(zz - line) < 0.15]
+        dense.append((sc, _dense_median(zz)))
         if len(hit):
             st.append(sc)
             zs.append(float(np.median(hit)))
-    st, zs = np.array(st), np.array(zs)
+    st, zs = np.array(st, float), np.array(zs, float)
+    dense_s = np.array([item[0] for item in dense], float)
+    dense_z = np.array([item[1] for item in dense], float)
     coef = np.polyfit(st, zs, 1) if len(st) >= 3 else np.array([slope, level - slope * s_ref])
     if len(st) < 0.7 * len(stations):
         info["reason"] = "deck not level/straight"
@@ -283,9 +288,14 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
         info["support_span"] = float(np.median(span))
     local_a = _local_deck_z(s_lo, 1.0, s, t, z, near, t_c, width / 2.0)
     local_b = _local_deck_z(s_hi, -1.0, s, t, z, near, t_c, width / 2.0)
-    z_a, used_a = _choose_end_z(z_line_a, local_a)
-    z_b, used_b = _choose_end_z(z_line_b, local_b)
-    info.update(z_a=z_a, z_b=z_b, z_local_a=local_a, z_local_b=local_b)
+    ramp_a = _nearest_station_z(dense_s, dense_z, s_lo)
+    ramp_b = _nearest_station_z(dense_s, dense_z, s_hi)
+    land_a, land_a_band = landing_roof_z(faces[:, :2], faces[:, 2], (a.center_x, a.center_y), a.radius, (b.center_x, b.center_y), ramp_a or z_line_a)
+    land_b, land_b_band = landing_roof_z(faces[:, :2], faces[:, 2], (b.center_x, b.center_y), b.radius, (a.center_x, a.center_y), ramp_b or z_line_b)
+    z_a, used_a = _choose_end_z(z_line_a, local_a, ramp_a)
+    z_b, used_b = _choose_end_z(z_line_b, local_b, ramp_b)
+    info.update(z_a=z_a, z_b=z_b, z_local_a=local_a, z_local_b=local_b,
+                ramp_a=ramp_a, ramp_b=ramp_b, landing_a=land_a, landing_b=land_b)
     p0 = pa + u * s_lo + v * t_c
     p1 = pa + u * s_hi + v * t_c
     conn = Connector(
@@ -297,10 +307,22 @@ def detect_connector(a, b, faces: np.ndarray, ground_at=None, half_width: float 
         end_stops={"a": stop_a, "b": stop_b},
         end_sources={"a": "measured", "b": "measured"},
         end_fit={
-            "a": {"line_z": round(z_line_a, 3), "local_z": None if local_a is None else round(local_a, 3),
-                  "used": used_a},
-            "b": {"line_z": round(z_line_b, 3), "local_z": None if local_b is None else round(local_b, 3),
-                  "used": used_b},
+            "a": {
+                "line_z": round(z_line_a, 3),
+                "local_z": None if local_a is None else round(local_a, 3),
+                "ramp_z": None if ramp_a is None else round(ramp_a, 3),
+                "landing_roof_z": None if land_a is None else round(land_a, 3),
+                "landing_band": land_a_band,
+                "used": used_a,
+            },
+            "b": {
+                "line_z": round(z_line_b, 3),
+                "local_z": None if local_b is None else round(local_b, 3),
+                "ramp_z": None if ramp_b is None else round(ramp_b, 3),
+                "landing_roof_z": None if land_b is None else round(land_b, 3),
+                "landing_band": land_b_band,
+                "used": used_b,
+            },
         },
     )
     info["reason"] = "ok"
@@ -324,17 +346,81 @@ def _top_level(z: np.ndarray, area: np.ndarray, bin_size: float = 0.1) -> float:
     return float(np.median(z[sel]))
 
 
-def _choose_end_z(line_z: float, local_z):
-    """Use the local deck when it agrees with the span line.
+def _dense_median(values) -> float:
+    zz = np.asarray(values, float)
+    if len(zz) < 4:
+        return float(np.median(zz))
+    edges = np.arange(float(zz.min()), float(zz.max()) + 0.20, 0.20)
+    if len(edges) < 2:
+        return float(np.median(zz))
+    hist, edges = np.histogram(zz, bins=edges)
+    index = int(np.argmax(hist))
+    band = (zz >= edges[index]) & (zz < edges[index + 1] + 1e-9)
+    if int(band.sum()) < 3:
+        return float(np.median(zz))
+    return float(np.median(zz[band]))
 
-    A band more than 25 cm off the line is a different surface in the same
-    window. Keep the line, and keep the local value for the report.
+
+def _choose_end_z(line_z: float, local_z, ramp_z=None):
+    """Prefer the span's own end station over a straight line or a mixed landing.
+
+    The station median is the deck measured along the bridge. A straight line
+    can flatten a real ramp. A local window can pick a curb instead of the deck.
     """
+    if ramp_z is not None and (local_z is None or abs(float(local_z) - float(ramp_z)) > 0.15):
+        if line_z is None or abs(float(ramp_z) - float(line_z)) > 0.12:
+            return float(ramp_z), "ramp"
     if local_z is None:
-        return float(line_z), "line"
+        return float(line_z if ramp_z is None else ramp_z), "line" if ramp_z is None else "ramp"
+    if ramp_z is not None and abs(float(local_z) - float(ramp_z)) <= 0.15:
+        return float(local_z), "local"
     if abs(float(local_z) - float(line_z)) <= 0.25:
         return float(local_z), "local"
     return float(line_z), "line_kept"
+
+
+def _nearest_station_z(stations_s, stations_z, s_at: float):
+    if len(stations_s) == 0:
+        return None
+    index = int(np.argmin(np.abs(np.asarray(stations_s) - s_at)))
+    if abs(float(stations_s[index]) - s_at) > 1.0:
+        return None
+    return float(stations_z[index])
+
+
+def landing_roof_z(xy, zz, tank_xy, radius: float, toward_xy, deck_z: float):
+    """Roof height in the sector facing the bridge, not the whole-ring average.
+
+    When the landing has two bands, the one within 0.35 m of the deck is the
+    surface the bridge is on. The other band is recorded only as the dense plate.
+    Returns (z or None, which band).
+    """
+    if len(xy) < 8 or radius <= 0:
+        return None, "none"
+    rel = np.asarray(xy) - np.asarray(tank_xy)
+    rho = np.hypot(rel[:, 0], rel[:, 1])
+    azimuth = np.arctan2(rel[:, 1], rel[:, 0])
+    aim = math.atan2(float(toward_xy[1] - tank_xy[1]), float(toward_xy[0] - tank_xy[0]))
+    delta = np.abs((azimuth - aim + math.pi) % (2 * math.pi) - math.pi)
+    sel = (rho > radius * 0.72) & (rho < radius * 1.08) & (delta < math.radians(25))
+    if int(sel.sum()) < 8:
+        return None, "none"
+    zz = np.asarray(zz)[sel]
+    edges = np.arange(float(zz.min()), float(zz.max()) + 0.15, 0.15)
+    if len(edges) < 2:
+        return float(np.median(zz)), "dense"
+    hist, edges = np.histogram(zz, bins=edges)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    near = [i for i in range(len(hist)) if hist[i] >= 8 and abs(float(centers[i]) - deck_z) <= 0.35]
+    if near:
+        index = min(near, key=lambda i: abs(float(centers[i]) - deck_z))
+        band = (zz >= edges[index]) & (zz < edges[index + 1] + 1e-9)
+        return float(np.median(zz[band])), "near_deck"
+    index = int(np.argmax(hist))
+    band = (zz >= edges[index]) & (zz < edges[index + 1] + 1e-9)
+    if int(band.sum()) < 5:
+        return None, "none"
+    return float(np.median(zz[band])), "dense"
 
 
 def _local_deck_z(s_wall: float, gap_sign: float, s, lateral, z, near, t_c: float, half_w: float):

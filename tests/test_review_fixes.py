@@ -524,6 +524,48 @@ def test_local_deck_is_kept_apart_from_the_straight_line_and_the_roof():
     assert conn.end_sources["a"] == "rule:seat_to_measured_roof"
 
 
+def test_a_roof_seat_that_steepens_the_ramp_is_refused():
+    from tankextract.corrections import apply_corrections
+    from tankextract.deliverable import seat_slope_conflict
+
+    conflict, before, after = seat_slope_conflict(0, 0, 60.42, 3.92, 0, 61.83, 60.07, 62.10)
+    assert conflict
+    assert before < 23 and after > 26
+    conn = _Conn()
+    conn.name = "Connector_002"
+    conn.end_sources = {}
+    conn.end_fit = {
+        "a": {"landing_roof_z": 60.07, "ramp_z": 60.42},
+        "b": {"landing_roof_z": 62.10, "ramp_z": 61.83},
+    }
+    conn.x0, conn.y0, conn.z0 = 0.0, 0.0, 60.42
+    conn.x1, conn.y1, conn.z1 = 3.92, 0.0, 61.83
+    apply_corrections([_Tank("Tank_002", 0, 0, 3), _Tank("Tank_004", 4, 0, 3)], [conn], {
+        "connectors": {"Connector_002": {"source": "manual", "ends": {
+            "a": {"rule": "seat_to_measured_roof"},
+            "b": {"rule": "seat_to_measured_roof"},
+        }}},
+    }, log=lambda *_a, **_k: None)
+    assert conn.z0 == 60.42 and conn.z1 == 61.83
+    assert conn.seat_conflict["applied"] is False
+    assert conn.end_sources["a"] == "manual:conflict_not_applied"
+
+
+def test_landing_roof_follows_the_deck_band_not_the_lower_plate():
+    from tankextract.connectors import _choose_end_z, landing_roof_z
+
+    xy, zz = [], []
+    for z, n in ((62.10, 60), (62.58, 55)):
+        for k in range(n):
+            ang = -0.2 + 0.4 * k / n
+            xy.append([2.4 * math.cos(ang), 2.4 * math.sin(ang)])
+            zz.append(z)
+    height, band = landing_roof_z(np.asarray(xy), np.asarray(zz), (0, 0), 2.6, (4, 0), 62.63)
+    assert band == "near_deck"
+    assert abs(height - 62.58) < 0.08
+    assert _choose_end_z(61.57, 61.57, 61.83) == (61.83, "ramp")
+
+
 def test_manual_roof_seat_keeps_the_measured_deck():
     from tankextract.corrections import apply_corrections
     from tankextract.deliverable import _junctions

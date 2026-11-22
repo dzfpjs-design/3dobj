@@ -1,9 +1,8 @@
 name: Windows installer
 
 on:
-  push:
-    branches:
-      - cursor/tank-osgb-extract-304d
+  # Installers are built only when someone starts this workflow by hand.
+  # A push to the branch must not publish a release or tag.
   workflow_dispatch:
 
 permissions:
