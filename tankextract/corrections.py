@@ -34,26 +34,15 @@ def _number(record: dict, key: str):
 
 def _landing_target(conn, end: str, tanks):
     """Bridge-head roof. The azimuth band wins over the whole-ring profile."""
-    fit = (getattr(conn, "end_fit", None) or {}).get(end) or {}
-    if fit.get("landing_roof_z") is not None:
-        return float(fit["landing_roof_z"])
-    from tankextract.deliverable import _has_roof, _profile_z_at
-    import math
+    from tankextract.deliverable import landing_seat_z
 
-    tank_name = conn.tank_a if end == "a" else conn.tank_b
-    tank = next((item for item in tanks if item.name == tank_name or getattr(item, "export_name", "") == tank_name), None)
-    if tank is None or not _has_roof(tank):
-        return None
-    x = conn.x0 if end == "a" else conn.x1
-    y = conn.y0 if end == "a" else conn.y1
-    return _profile_z_at(tank, math.hypot(x - tank.center_x, y - tank.center_y))
+    return landing_seat_z(conn, end, tanks)
 
 
 def apply_corrections(tanks, connectors, data: dict | None, log=print) -> None:
     """Apply an explicit corrections file. Missing numbers stay missing."""
     if not data:
         return
-    from tankextract.deliverable import seat_slope_conflict
     tanks_by = {}
     for tank in tanks:
         tanks_by[tank.name] = tank
@@ -112,47 +101,24 @@ def apply_corrections(tanks, connectors, data: dict | None, log=print) -> None:
                 log(f"  校正 {conn.name} 端 {end}：没有 z，也没有 seat_to_measured_roof，不移动")
                 continue
             proposals[end] = (float(target), rule, spec)
-        prop0 = proposals["a"][0] if "a" in proposals else conn.z0
-        prop1 = proposals["b"][0] if "b" in proposals else conn.z1
-        seating = any(rule == "seat_to_measured_roof" for _z, rule, _spec in proposals.values())
-        conflict, slope_before, slope_after = seat_slope_conflict(
-            conn.x0, conn.y0, conn.z0, conn.x1, conn.y1, conn.z1, prop0, prop1,
-        )
-        if seating and conflict and proposals:
-            conn.seat_conflict = {
-                "applied": False,
-                "slope_before_deg": round(slope_before, 2),
-                "slope_if_seated_deg": round(slope_after, 2),
-                "preview_z0": round(prop0, 3),
-                "preview_z1": round(prop1, 3),
-                "reason": "贴两端屋面会改变实测桥坡，已拒绝，桥面保持测量值",
-            }
-            for end in proposals:
-                conn.end_sources[end] = f"{source}:conflict_not_applied"
+        from tankextract.deliverable import apply_seat_ends
+
+        result = apply_seat_ends(conn, proposals, source)
+        if result["status"] == "conflict":
             log(
                 f"  校正 {conn.name}：冲突，不贴屋面。"
-                f"实测坡度 {slope_before:.1f}°，贴合后 {slope_after:.1f}°"
+                f"实测坡度 {result['slope_before_deg']:.1f}°，贴合后 {result['slope_after_deg']:.1f}°"
             )
             continue
-        for end, (target, rule, spec) in proposals.items():
-            current = conn.z0 if end == "a" else conn.z1
-            if abs(target - current) <= 0.15 and rule == "seat_to_measured_roof":
-                conn.end_sources[end] = f"{source}:already_on_landing"
-                log(f"  校正 {conn.name} 端 {end}：桥头屋面与实测桥面相差 {abs(target - current):.2f} m，不移动")
-                continue
-            if end == "a":
-                conn.z0_before_rule = current
-                conn.z0 = target
-            else:
-                conn.z1_before_rule = current
-                conn.z1 = target
-            if spec.get("x") is not None and spec.get("y") is not None:
-                if end == "a":
-                    conn.x0, conn.y0 = float(spec["x"]), float(spec["y"])
-                else:
-                    conn.x1, conn.y1 = float(spec["x"]), float(spec["y"])
-            conn.end_sources[end] = f"{source}:{rule}" if rule else source
-            log(f"  校正 {conn.name} 端 {end}：按 {source} 设置端点高程")
+        for end, outcome in result["ends"].items():
+            if outcome == "already_on_landing":
+                current = conn.z0 if end == "a" else conn.z1
+                log(
+                    f"  校正 {conn.name} 端 {end}：桥头屋面与实测桥面相差 "
+                    f"{abs(proposals[end][0] - current):.2f} m，不移动"
+                )
+            elif outcome == "moved":
+                log(f"  校正 {conn.name} 端 {end}：按 {source} 设置端点高程")
         height = _number(record, "handrail_height_m")
         if height is not None:
             conn.handrail_height = height

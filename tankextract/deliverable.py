@@ -168,7 +168,7 @@ def _junctions(conn, by_name) -> list[dict]:
         inside = tank.radius - dist
         if inside > 0.15:
             landing = "inside_shell"
-        elif inside < -0.20:
+        elif inside < -0.15:
             landing = "short_of_wall"
         else:
             landing = "at_wall"
@@ -290,41 +290,136 @@ def seat_slope_conflict(x0, y0, z0, x1, y1, z1, prop0, prop1, limit_deg: float =
     return abs(after - before) > limit_deg, before, after
 
 
-def apply_junction_rule(tanks, connectors, rule: str | None) -> int:
-    """Seat walkway ends on the measured roof plate only when the rule is named.
+def landing_seat_z(conn, end: str, tanks) -> float | None:
+    """Height a roof seat would use: the bridge-head band, or the radial profile if that band is absent."""
+    fit = (getattr(conn, "end_fit", None) or {}).get(end) or {}
+    if fit.get("landing_roof_z") is not None:
+        return float(fit["landing_roof_z"])
+    tank_name = conn.tank_a if end == "a" else conn.tank_b
+    tank = next(
+        (item for item in tanks if item.name == tank_name or getattr(item, "export_name", "") == tank_name),
+        None,
+    )
+    if tank is None or not _has_roof(tank):
+        return None
+    x = conn.x0 if end == "a" else conn.x1
+    y = conn.y0 if end == "a" else conn.y1
+    return _profile_z_at(tank, math.hypot(x - tank.center_x, y - tank.center_y))
 
-    The measured deck height is kept on the connector as ``z_before_rule``.
-    The default rule is off, so estimated geometry is not built.
+
+def apply_seat_ends(conn, proposals: dict, source_prefix: str) -> dict:
+    """Move proposed ends, or refuse a seat that would change the measured slope by more than 4°.
+
+    ``proposals`` maps ``a``/``b`` to ``(target_z, rule)`` or ``(target_z, rule, spec)``.
+    An explicit numeric target is not slope-gated. A seat already within 15 cm of the
+    deck is recorded and does not move the deck. That 15 cm is not a completed joint.
+    """
+    if getattr(conn, "end_sources", None) is None:
+        conn.end_sources = {}
+    prop0 = proposals["a"][0] if "a" in proposals else conn.z0
+    prop1 = proposals["b"][0] if "b" in proposals else conn.z1
+    seating = any(item[1] == "seat_to_measured_roof" for item in proposals.values())
+    conflict, before, after = seat_slope_conflict(
+        conn.x0, conn.y0, conn.z0, conn.x1, conn.y1, conn.z1, prop0, prop1,
+    )
+    if seating and conflict and proposals:
+        conn.seat_conflict = {
+            "applied": False,
+            "slope_before_deg": round(before, 2),
+            "slope_if_seated_deg": round(after, 2),
+            "preview_z0": round(float(prop0), 3),
+            "preview_z1": round(float(prop1), 3),
+            "reason": "贴两端屋面会改变实测桥坡，已拒绝，桥面保持测量值",
+        }
+        for end in proposals:
+            conn.end_sources[end] = f"{source_prefix}:conflict_not_applied"
+        return {
+            "status": "conflict",
+            "moved": 0,
+            "slope_before_deg": before,
+            "slope_after_deg": after,
+            "ends": {end: "conflict" for end in proposals},
+        }
+    ends = {}
+    moved = 0
+    for end, item in proposals.items():
+        target = float(item[0])
+        rule = item[1]
+        spec = item[2] if len(item) > 2 and isinstance(item[2], dict) else {}
+        current = conn.z0 if end == "a" else conn.z1
+        if abs(target - current) <= 0.15 and rule == "seat_to_measured_roof":
+            conn.end_sources[end] = f"{source_prefix}:already_on_landing"
+            ends[end] = "already_on_landing"
+            continue
+        if end == "a":
+            conn.z0_before_rule = current
+            conn.z0 = target
+            if spec.get("x") is not None and spec.get("y") is not None:
+                conn.x0, conn.y0 = float(spec["x"]), float(spec["y"])
+        else:
+            conn.z1_before_rule = current
+            conn.z1 = target
+            if spec.get("x") is not None and spec.get("y") is not None:
+                conn.x1, conn.y1 = float(spec["x"]), float(spec["y"])
+        conn.end_sources[end] = f"{source_prefix}:{rule}" if rule else source_prefix
+        ends[end] = "moved"
+        moved += 1
+    return {"status": "applied", "moved": moved, "ends": ends}
+
+
+def apply_junction_rule(tanks, connectors, rule: str | None, log=None) -> int:
+    """Seat walkway ends on the bridge-head roof only when the rule is named.
+
+    The same decision as a corrections file: the landing sector is the target,
+    a slope change above 4° is refused, and an end already within 15 cm is not
+    moved. Ends a corrections file already decided are left alone. The measured
+    deck stays on ``z_before_rule`` when an end does move. Sphere and platform
+    bridges are not seated. The default rule is off.
     """
     if rule != "seat_to_measured_roof":
         return 0
-    by_name = {tank.name: tank for tank in tanks}
     moved = 0
     for conn in connectors:
         if getattr(conn, "kind", "") != "walkway":
             continue
+        if getattr(conn, "end_sources", None) is None:
+            conn.end_sources = {}
+        proposals = {}
         for end in ("a", "b"):
-            tank = by_name.get(conn.tank_a if end == "a" else conn.tank_b)
-            if tank is None or not _has_roof(tank):
+            prior = conn.end_sources.get(end) or ""
+            if prior not in ("", "measured"):
+                continue
+            tank_name = conn.tank_a if end == "a" else conn.tank_b
+            tank = next(
+                (item for item in tanks if item.name == tank_name or getattr(item, "export_name", "") == tank_name),
+                None,
+            )
+            if tank is None:
                 continue
             platform = ((getattr(tank, "accessories", None) or {}).get("roof") or {}).get("platform")
             if platform:
                 continue
-            x = conn.x0 if end == "a" else conn.x1
-            y = conn.y0 if end == "a" else conn.y1
-            dist = math.hypot(x - tank.center_x, y - tank.center_y)
-            roof = _profile_z_at(tank, dist)
-            if roof is None:
+            target = landing_seat_z(conn, end, tanks)
+            if target is None:
                 continue
-            current = conn.z0 if end == "a" else conn.z1
-            if end == "a":
-                conn.z0_before_rule = current
-                conn.z0 = float(roof)
-            else:
-                conn.z1_before_rule = current
-                conn.z1 = float(roof)
-            conn.end_sources[end] = "rule:seat_to_measured_roof"
-            moved += 1
+            proposals[end] = (float(target), "seat_to_measured_roof")
+        if not proposals:
+            continue
+        result = apply_seat_ends(conn, proposals, "rule")
+        moved += int(result["moved"])
+        if log is None:
+            continue
+        if result["status"] == "conflict":
+            log(
+                f"  {getattr(conn, 'name', '')}：桥端规则冲突，不贴屋面。"
+                f"实测坡度 {result['slope_before_deg']:.1f}°，贴合后 {result['slope_after_deg']:.1f}°"
+            )
+            continue
+        for end, outcome in result["ends"].items():
+            if outcome == "already_on_landing":
+                log(f"  {getattr(conn, 'name', '')} 端 {end}：桥头屋面与实测桥面相差不超过 15 cm，桥面未改")
+            elif outcome == "moved":
+                log(f"  {getattr(conn, 'name', '')} 端 {end}：已贴到桥头实测屋面，原桥面高程保留")
     return moved
 
 
@@ -513,6 +608,86 @@ def tessellation_segments(
 
 
 _DETAIL_KEYS = ("tread", "flight", "rail", "handrail", "girder", "stringer", "leg_", "opening", "brace", "post")
+
+
+def write_seat_report(connectors, path) -> None:
+    """One row per walkway end so a connector ID can be checked without reading the mesh."""
+    import json
+    from pathlib import Path
+
+    rows = []
+    for conn in connectors:
+        if getattr(conn, "kind", "") != "walkway":
+            continue
+        run = math.hypot(conn.x1 - conn.x0, conn.y1 - conn.y0)
+        slope = math.degrees(math.atan2(conn.z1 - conn.z0, run)) if run > 0 else 0.0
+        rows.append({
+            "id": conn.name,
+            "export_name": getattr(conn, "export_name", "") or "",
+            "tank_a": conn.tank_a,
+            "tank_b": conn.tank_b,
+            "z0_m": round(float(conn.z0), 3),
+            "z1_m": round(float(conn.z1), 3),
+            "slope_built_deg": round(slope, 2),
+            "seat_conflict": getattr(conn, "seat_conflict", None),
+            "ends": list(getattr(conn, "junctions", None) or []),
+        })
+    document = {
+        "junction_rule_default": "none",
+        "seat_slope_limit_deg": 4.0,
+        "note": (
+            "默认不贴屋面。seat_to_measured_roof 与校正文件使用同一判断："
+            "目标是桥头扇区屋面，不是整圈径向中位。"
+            "贴合会使实测桥坡变化超过 4° 时拒绝，桥面保持测量值，并在 seat_conflict 中给出贴合后的预览。"
+            "桥头屋面与桥面相差不超过 15 cm 时不移动；这 15 cm 不是连接合格。"
+            "source_mesh 为 false 才表示端点被校正移过。"
+        ),
+        "connectors": rows,
+    }
+    Path(path).write_text(json.dumps(document, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def detail_floors_from_counts(face_counts: list[dict], limit: int = 2000) -> list[dict]:
+    """Per exported model: total polygons and the floor of the parts that stay."""
+    groups: dict[str, list] = {}
+    for row in face_counts:
+        name = str(row.get("object") or "")
+        model = name.split("_", 1)[0] if name else ""
+        groups.setdefault(model, []).append(row)
+    floors = []
+    for model, rows in groups.items():
+        floor = detail_floor(rows)
+        total = sum(int(item.get("polygons") or 0) for item in rows)
+        floors.append({
+            "model": model,
+            "polygons": total,
+            "detail_floor_polygons": floor["polygons"],
+            "detail_floor_parts": floor["parts"],
+            "detail_floor_above_2000": floor["above_2000"],
+            "detail_floor_reason": floor["reason"],
+            "limit": int(limit) if limit else 2000,
+            "over_budget": bool(limit) and total > int(limit),
+        })
+    return floors
+
+
+def annotate_detail_floors(path) -> list[dict]:
+    """Add ``detail_floors`` to a Blender report. The mesh files are not rewritten."""
+    import json
+    from pathlib import Path
+
+    report_path = Path(path)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    limit = report.get("max_faces") or 2000
+    floors = detail_floors_from_counts(report.get("face_counts") or [], int(limit))
+    report["detail_floors"] = floors
+    report["detail_floor_note"] = (
+        "detail_floor_polygons counts treads, rails, girders, stringers, legs, openings, braces and posts. "
+        "Those parts are kept. A model whose floor is already above 2000 cannot reach the budget "
+        "without deleting them or changing a round tube into a square bar."
+    )
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return floors
 
 
 def detail_floor(face_counts: list[dict]) -> dict:

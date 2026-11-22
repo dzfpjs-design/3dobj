@@ -346,6 +346,21 @@ def test_parent_tile_is_not_meshed_when_its_child_is_present():
     assert use_tile_mesh(["Tile_L22_child.osgb"]) is False
 
 
+def test_nineteen_centimetres_short_of_the_wall_is_not_at_the_wall():
+    tank = _Tank("Tank_001", 0, 0, 8.0)
+    conn = _Conn()
+    conn.x0, conn.y0, conn.z0 = 8.19, 0.0, 12.0
+    seat_walkway_ends([tank, _Tank("Tank_002", 30, 0, 5)], [conn])
+    ends = {row["end"]: row for row in conn.junctions}
+    assert ends["a"]["inside_shell_m"] < -0.15
+    assert ends["a"]["landing"] == "short_of_wall"
+    near = _Conn()
+    near.x0, near.y0, near.z0 = 8.10, 0.0, 12.0
+    seat_walkway_ends([tank, _Tank("Tank_002", 30, 0, 5)], [near])
+    ends = {row["end"]: row for row in near.junctions}
+    assert ends["a"]["landing"] == "at_wall"
+
+
 def test_inside_the_shell_is_not_a_platform_connection():
     tank = _Tank("Tank_001", 0, 0, 8.0)
     conn = _Conn()
@@ -549,6 +564,66 @@ def test_a_roof_seat_that_steepens_the_ramp_is_refused():
     assert conn.z0 == 60.42 and conn.z1 == 61.83
     assert conn.seat_conflict["applied"] is False
     assert conn.end_sources["a"] == "manual:conflict_not_applied"
+
+
+def test_global_junction_rule_uses_the_landing_and_refuses_a_steep_seat():
+    from tankextract.deliverable import apply_junction_rule
+
+    def bridge(z0, z1, land0, land1):
+        conn = _Conn()
+        conn.name = "Connector_002"
+        conn.end_sources = {}
+        conn.tank_a = "Tank_002"
+        conn.tank_b = "Tank_004"
+        conn.x0, conn.y0, conn.z0 = 0.0, 0.0, z0
+        conn.x1, conn.y1, conn.z1 = 3.92, 0.0, z1
+        conn.end_fit = {
+            "a": {"landing_roof_z": land0},
+            "b": {"landing_roof_z": land1},
+        }
+        return conn
+
+    tanks = []
+    for name, x in (("Tank_002", 0.0), ("Tank_004", 6.0)):
+        tank = _Tank(name, x, 0.0, 3.0)
+        tank.z_base = 50.0
+        tank.wall_height = 10.0
+        tank.total_height = 12.0
+        tank.roof_type = "cone"
+        tank.roof_profile_z = [60.0] * 10
+        tanks.append(tank)
+    steep = bridge(60.42, 61.83, 60.07, 62.10)
+    assert apply_junction_rule(tanks, [steep], "seat_to_measured_roof") == 0
+    assert steep.z0 == 60.42 and steep.z1 == 61.83
+    assert steep.seat_conflict["applied"] is False
+    assert steep.seat_conflict["slope_if_seated_deg"] > 26
+    assert steep.end_sources["a"] == "rule:conflict_not_applied"
+    close = bridge(60.487, 61.568, 60.424, 61.616)
+    assert apply_junction_rule(tanks, [close], "seat_to_measured_roof") == 0
+    assert close.z0 == 60.487 and close.z1 == 61.568
+    assert close.end_sources["a"] == "rule:already_on_landing"
+    assert close.end_sources["b"] == "rule:already_on_landing"
+    close.end_sources = {"a": "manual:conflict_not_applied", "b": "manual:conflict_not_applied"}
+    assert apply_junction_rule(tanks, [close], "seat_to_measured_roof") == 0
+    assert close.end_sources["a"] == "manual:conflict_not_applied"
+
+
+def test_detail_floors_are_grouped_by_exported_model():
+    from tankextract.deliverable import detail_floors_from_counts
+
+    rows = [
+        {"object": "LA0002_stair_treads", "polygons": 516},
+        {"object": "LA0002_handrail", "polygons": 1600},
+        {"object": "LA0002_body", "polygons": 160},
+        {"object": "LA0004_body", "polygons": 80},
+    ]
+    floors = {row["model"]: row for row in detail_floors_from_counts(rows, 2000)}
+    assert floors["LA0002"]["detail_floor_polygons"] == 2116
+    assert floors["LA0002"]["polygons"] == 2276
+    assert floors["LA0002"]["detail_floor_above_2000"]
+    assert floors["LA0002"]["over_budget"]
+    assert floors["LA0004"]["detail_floor_polygons"] == 0
+    assert floors["LA0004"]["over_budget"] is False
 
 
 def test_landing_roof_follows_the_deck_band_not_the_lower_plate():

@@ -749,7 +749,7 @@ def _note_faces(obj, faces, limit, report) -> None:
     if exceeded:
         reason = {
             "shell": "shell is already at its roundness floor; cutting further would facet the wall, so the shell was kept",
-            "tube": "pipe section stays 6-sided so it remains a tube; the rail or girder was kept",
+            "tube": "the tube section stays round (8 sides unless --tube-sides says otherwise); the rail or girder was kept",
             "leg": "each leg is kept; the section stays round",
             "stair": "treads and rails are kept; deleting steps would remove the stair",
             "other": "part kept; the budget does not delete objects",

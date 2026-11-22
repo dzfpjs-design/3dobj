@@ -152,7 +152,7 @@ def launch() -> None:
     ttk.Entry(grid, textvariable=origin_var, width=28).grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
     ttk.Label(grid, text="人工校正 JSON（空=不改）").grid(row=4, column=0, sticky="w")
     ttk.Entry(grid, textvariable=corrections_var, width=28).grid(row=4, column=1, columnspan=3, sticky="w", padx=4)
-    ttk.Label(grid, text="桥端规则（默认不贴屋面）").grid(row=5, column=0, sticky="w")
+    ttk.Label(grid, text="桥端规则（默认不贴；贴合改坡超过 4° 则拒绝）").grid(row=5, column=0, sticky="w")
     ttk.Combobox(grid, textvariable=junction_var, values=("none", "seat_to_measured_roof"), width=22, state="readonly").grid(row=5, column=1, columnspan=2, sticky="w", padx=4)
 
     ttk.Label(frame, textvariable=status).grid(row=5, column=0, columnspan=3, sticky="w", **pad)

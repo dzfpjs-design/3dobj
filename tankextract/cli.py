@@ -132,7 +132,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--junction-rule", default="none", choices=("none", "seat_to_measured_roof"),
         help="桥端修正规则，默认 none：端点用罐壁外实测桥面，不贴屋面。"
-             "seat_to_measured_roof 才把端点放到已测屋面板，并标记来源；不手填标高",
+             "seat_to_measured_roof 与校正文件相同：只贴桥头扇区屋面，不贴整圈中位；"
+             "贴合会使实测桥坡变化超过 4° 时拒绝并保持桥面，结果写入 seat_report.json",
     )
     parser.add_argument(
         "--corrections", default=None,
