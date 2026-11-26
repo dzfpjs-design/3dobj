@@ -44,6 +44,18 @@ jobs:
         timeout-minutes: 40
         run: powershell -ExecutionPolicy Bypass -File packaging\windows\smoke.ps1
 
+      - name: Require the unpublished 1.3.9 candidate
+        run: python -c "import tankextract; assert tankextract.__version__=='1.3.9', tankextract.__version__"
+
+      - name: Checksum
+        id: sum
+        shell: bash
+        run: |
+          file=$(ls dist/installer/TankExtract-Setup-*.exe)
+          echo "sha256=$(sha256sum "$file" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "bytes=$(stat -c%s "$file")" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$file")" >> "$GITHUB_OUTPUT"
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
@@ -54,16 +66,32 @@ jobs:
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tankextract-v1.3.8
-          name: TankExtract 1.3.8 Windows
+          tag_name: tankextract-v1.3.9
+          name: TankExtract 1.3.9 Windows
+          target_commitish: ${{ github.sha }}
           prerelease: true
           generate_release_notes: false
           body: |
-            Windows 10/11 x64 安装包 1.3.8，仍是候选，不是验收版。不覆盖 1.0.0–1.3.7。
-            默认桥端规则仍是 none。只有校正文件或 --junction-rule 才会把端点放到实测屋面。
-            校正会保留校正前桥面高程，并标明不是源网格原值。
-            不补未测栏杆和桥柱。圆管仍是 8/12 边。
-            FBX 仍是 Phong/Lambert。3ds Max 脚本未在 Max 中运行。
+            Windows 10/11 x64 安装包 1.3.9，仍是候选，不是验收版。不覆盖 1.0.0–1.3.8。
+            内置 Python 依赖和 Blender 4.2.14 LTS。图形界面名称为「罐体提取」，安装目录含 tankextract.exe。
+
+            相对 1.3.8（ed0117c）包进的代码修复：
+            - 桥端贴屋面使用桥头扇区屋面，不用整圈径向中位。
+            - 贴合会使实测桥坡变化超过 4° 时拒绝，桥面保持测量值，预览写入 seat_report.json。审查数据上 Connector_002 保持约 15.4°（整圈预览 27.4° 被拒绝），Connector_005 保持约 16.1°（整圈预览 25.3° 被拒绝）。
+            - 界面下拉、--junction-rule 与校正文件使用同一判断。默认规则仍是 none。校正文件已经决定的端点不会被全局规则再改。
+            - 桥端距罐壁超过 15 cm 标为 short_of_wall。Connector_006 仍短约 19 cm，端点没有加长，也没有补平台。
+            - 圆管仍是 8/12 边。导出报告写出每个模型的保留件面数。
+
+            已知限制：
+            - LA0006、LA0007、LA0008 的绕罐栏杆，以及球罐 Connector_004 的桥柱，源网格没有表达。安装包不补造，也不把推定写成实测。
+            - Tank_031 对应 LA0002 为 2632 面，其中踏步、栏杆、抗风圈、梯梁和立柱 2364 面。楼梯塔约 2402 和 2434 面。2000 面没有达到。
+            - FBX 材质仍是 Phong/Lambert。convert_to_standard.ms 没有在 3ds Max 中运行。
+            - 高程基准未知。没有工艺管线。
+
+            提交 ${{ github.sha }}
+            文件 ${{ steps.sum.outputs.name }}
+            字节 ${{ steps.sum.outputs.bytes }}
+            SHA256 ${{ steps.sum.outputs.sha256 }}
           files: dist/installer/TankExtract-Setup-*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
