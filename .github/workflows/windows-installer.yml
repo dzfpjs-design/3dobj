@@ -1,15 +1,25 @@
 name: Windows installer
 
 on:
-  # Installers are built only when someone starts this workflow by hand.
-  # A push to the branch must not publish a release or tag.
+  # workflow_dispatch only runs once this file is on the default branch.
+  # This integration cannot start that event, so the single 1.3.9 candidate
+  # is built by the push below. The job condition matches one commit message,
+  # and a following commit removes the push trigger.
   workflow_dispatch:
+  push:
+    branches:
+      - cursor/tank-osgb-extract-304d
 
 permissions:
   contents: write
 
+concurrency:
+  group: tankextract-windows-1.3.9
+  cancel-in-progress: false
+
 jobs:
   installer:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'Publish Windows candidate 1.3.9')
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
